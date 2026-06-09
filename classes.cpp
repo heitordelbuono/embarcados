@@ -1,55 +1,28 @@
 #include <stdio.h>
+#include <ESP32Servo.h>
+#include "BluetoothSerial.h"
 
 #define MAX_EVENTO 50
-
-enum TIPOS_FILA {CORRECAO_X, CORRECAO_Y};
-
-using namespace std;
-
-// MÓDULO DO CONTROLE BLUETOOTH
-class Bluetooth {
-    public:
-    float pos_x_atual;
-    float pos_y_atual;
-
-    // inicializa módulo bluetooth
-    void iniciaConexao(void){
-        SerialBT.begin("Mesa PID");
-    }
-
-    // verifica se tem dado novo
-    void temDadoNovo(){
-        ...
-    }
-
-    // pega a posição x atual
-    float getPosicaoX(void){
-        ...
-    }
-
-    // pega a posição y atual
-    float getPosicaoY(void){
-        ...
-    }
-
-    // MÉTODO PARA O BOTÃO LIGA/DESLIGA
-    void botao_LigaDesliga(void){
-        ...
-    }
-
-    // MÉTODO PARA O BOTÃO DE CALIBRAGEM
-    void botao_Calibra(void){
-        ...
-    }
-};
+#define pinoX 1 // pino do servo no eixo X
+#define pinoY 2 // pino do servo no eixo Y
+#define Kp 200 // cte proporcional do controlado PD
+#define Td 1 // cte derivativa do controlador PD
+#define N 100 // parâmetro do filtro do controlador PD
+#define deltat 0.02 // discretização do tempo
 
 struct dados_eventos {
     int tipo;
     float dado;
     unsigned long instante;
 };
+
+enum TIPOS_FILA {CORRECAO_X, CORRECAO_Y};
+
+using namespace std;
+
 // MÓDULO DA FILA DE EVENTOS
-class filaDeEventos {
+
+class FilaDeEventos {
     public:
     struct dados_eventos Evento[MAX_EVENTO];
     int numeroEventos = 0;
@@ -96,35 +69,59 @@ class filaDeEventos {
 
 };
 
-// MODULO GERENCIADOR
-class moduloGerenciador {
-    filaDeEventos fila; // fila de eventos
-    controladorPID controladorX; // controlador da direção x
-    controladorPID controladorY; // controlador da direção y
-    driverDeAtuacao driver; // driver de atuação dos servos
-    Bluetooth bluetooth; // bluetooth (botão + por onde recebe a posição da bolinha)
+// MÓDULO DO CONTROLE BLUETOOTH
 
-    void iniciaModuloGerenciador(void){
-        controladorX.iniciaControlador();
-        controladorY.iniciaControlador();
-        ...
+BluetoothSerial SerialBT;
+
+class Bluetooth {
+    public:
+    float pos_x_atual;
+    float pos_y_atual;
+    FilaDeEventos fila;
+    bool sistema_ligado = false;
+    bool flag_calibra = false;
+
+    // inicializa módulo bluetooth
+    void iniciaConexao(void){
+        SerialBT.begin("Mesa PID");
     }
 
-    void calculaAcaoControle_emX(float L, float posicaoX){
-        float sinal_x = controladorX.correcao(L, posicaoX);
-        unsigned long tempo_atual = micros();
-        fila.push(tempo_atual + 20000, CORRECAO_X, sinal_x);
+    // verifica se tem dado novo
+    bool temDadoNovo(){
+        if (SerialBT.available()){
+            String mensagem = SerialBT.readStringUntil('\n');
+            mensagem.trim();
+            if (mensagem == "CALIBRA"){
+                botao_Calibra();
+            } else if (mensagem == "LIGA"){
+                botao_LigaDesliga();
+            } else {
+                sscanf(mensagem.c_str(), "#%f$%f", &pos_x_atual, &pos_y_atual);
+            }
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    void calculaAcaoControle_emY(float L, float posicaoY){
-        float sinal_y = controladorY.correcao(L, posicaoY);
-        unsigned long tempo_atual = micros();
-        fila.push(tempo_atual + 20000, CORRECAO_Y, sinal_y);
-
+    // pega a posição x atual
+    float getPosicaoX(void){
+        return pos_x_atual;
     }
 
-    void calibra(void){
-        ...
+    // pega a posição y atual
+    float getPosicaoY(void){
+        return pos_y_atual;
+    }
+
+    // MÉTODO PARA O BOTÃO LIGA/DESLIGA
+    void botao_LigaDesliga(void){
+        sistema_ligado = !sistema_ligado;
+    }
+
+    // MÉTODO PARA O BOTÃO DE CALIBRAGEM
+    void botao_Calibra(void){
+        flag_calibra = true;
     }
 };
 
@@ -136,8 +133,8 @@ class FilteredDerivative{ // classe responsável por fazer a filtragem da deriva
     float prev_input; // input anterior
     float prev_derivative; // derivada anterior
 
-    void iniciaFiltro (float cte_Tau, float deltat){
-        tau = cte_Tau;
+    void iniciaFiltro (){
+        tau = Td/N;
         dt = deltat;
         prev_input = 0;
         prev_derivative = 0;
@@ -161,7 +158,7 @@ class FilteredDerivative{ // classe responsável por fazer a filtragem da deriva
     }
 };
 
-class controladorPID {
+class ControladorPID {
     public:
     float cteProporcional; // Kp
     float cteDerivativa; // Kp*Td
@@ -170,11 +167,11 @@ class controladorPID {
     FilteredDerivative filtered_derivative;
 
     void iniciaControlador(){ // método que inicia o controldor com os parâmetros desejados
-        filtered_derivative.iniciaFiltro(0.01, 0.02);
-        cteProporcional = 200; // Kp
-        cteDerivativa = 1; // Kp*Td
-        tau = 0.01; // Td/N
-        dt = 0.02; // discretização do tempo
+        filtered_derivative.iniciaFiltro();
+        cteProporcional = Kp;
+        cteDerivativa = Kp*Td;
+        tau = Td/N; // Td/N
+        dt = deltat; // discretização do tempo
     }
 
     float correcao(float setpoint, float posicao){ // obtém sinal de correção para os servo motores
@@ -190,13 +187,14 @@ class controladorPID {
 };
 
 // MÓDULO DO DRIVER DE ATUAÇÃO
-class driverDeAtuacao {
+class DriverDeAtuacao {
     public:
-    int pinoServoX;
-    int pinoServoY;
+    Servo servoX;
+    Servo servoY;
 
-    void iniciaMotores(int pinoX, int pinoY){
-        ...
+    void iniciaMotores(void){
+        servoX.attach(pinoX);
+        servoY.attach(pinoY);
     }
 
     void enviaCorrecaoX(float sinal_correcao){
@@ -204,7 +202,10 @@ class driverDeAtuacao {
         if (anguloX > 110){ // saturação
             anguloX = 110;
         }
-        ...
+        if (anguloX < 70){
+            anguloX = 70;
+        }
+        servoX.write(anguloX);
     }
 
     void enviaCorrecaoY(float sinal_correcao){
@@ -212,6 +213,44 @@ class driverDeAtuacao {
         if (anguloY > 110){ // saturacao
             anguloY = 110;
         }
-        ...
+        if (anguloY < 70){
+            anguloY = 70;
+        }
+        servoY.write(anguloY);
+    }
+};
+
+// MODULO GERENCIADOR
+class ModuloGerenciador {
+    public:
+    FilaDeEventos fila; // fila de eventos
+    ControladorPID controladorX; // controlador da direção x
+    ControladorPID controladorY; // controlador da direção y
+    DriverDeAtuacao driver; // driver de atuação dos servos
+    Bluetooth bluetooth; // bluetooth (botão + por onde recebe a posição da bolinha)
+
+    void iniciaModuloGerenciador(void){
+        controladorX.iniciaControlador();
+        controladorY.iniciaControlador();
+        bluetooth.iniciaConexao();
+        driver.iniciaMotores();
+    }
+
+    void calculaAcaoControle_emX(float L, float posicaoX){
+        float sinal_x = controladorX.correcao(L, posicaoX);
+        unsigned long tempo_atual = micros();
+        fila.push(tempo_atual + 20000, CORRECAO_X, sinal_x);
+    }
+
+    void calculaAcaoControle_emY(float L, float posicaoY){
+        float sinal_y = controladorY.correcao(L, posicaoY);
+        unsigned long tempo_atual = micros();
+        fila.push(tempo_atual + 20000, CORRECAO_Y, sinal_y);
+
+    }
+
+    void calibra(void){
+        driver.servoX.write(90);
+        driver.servoY.write(90);
     }
 };

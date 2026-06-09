@@ -3,7 +3,7 @@
 #define NENHUMA_ACAO -1
 enum ESTADOS {ESPERANDO, SISTEMA_LIGADO, EQUILIBRANDO, EQUILIBRADO};
 enum ACOES { A01, A02, A03, A04};
-enum EVENTOS {botao, desequilibrio, equilibrio};
+enum EVENTOS {BOTAO, DESEQUILIBRIO, EQUILIBRIO, NENHUM_EVENTO};
 struct proximo {
     int acao;
     int prox_estado;
@@ -14,8 +14,8 @@ void iniciaMaquinaEstados(void){
     int i, j;
     for (i=0; i<NUM_ESTADOS; i++){
         for (j=0; j<NUM_EVENTOS; j++){
-            matrizTransicaoEventos[i][j].acao = NENHUMA_ACAO;
-            matrizTransicaoEventos[i][j].prox_estado = i;
+            matrizTransicaoEstados[i][j].acao = NENHUMA_ACAO;
+            matrizTransicaoEstados[i][j].prox_estado = i;
         }
     }
     // ESTADO ESPERANDO
