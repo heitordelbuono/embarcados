@@ -9,6 +9,7 @@
 #define Td 1 // cte derivativa do controlador PD
 #define N 100 // parâmetro do filtro do controlador PD
 #define deltat 0.02 // discretização do tempo
+#define L 0.095 // set point da bolinha
 
 struct dados_eventos {
     int tipo;
@@ -80,6 +81,7 @@ class Bluetooth {
     FilaDeEventos fila;
     bool sistema_ligado = false;
     bool flag_calibra = false;
+    bool botao_lido = false;
 
     // inicializa módulo bluetooth
     void iniciaConexao(void){
@@ -87,7 +89,7 @@ class Bluetooth {
     }
 
     // verifica se tem dado novo
-    bool temDadoNovo(){
+    void temDadoNovo(void){
         if (SerialBT.available()){
             String mensagem = SerialBT.readStringUntil('\n');
             mensagem.trim();
@@ -98,10 +100,8 @@ class Bluetooth {
             } else {
                 sscanf(mensagem.c_str(), "#%f$%f", &pos_x_atual, &pos_y_atual);
             }
-            return true;
-        } else {
-            return false;
         }
+        return;
     }
 
     // pega a posição x atual
@@ -117,6 +117,7 @@ class Bluetooth {
     // MÉTODO PARA O BOTÃO LIGA/DESLIGA
     void botao_LigaDesliga(void){
         sistema_ligado = !sistema_ligado;
+        botao_lido = false;
     }
 
     // MÉTODO PARA O BOTÃO DE CALIBRAGEM
@@ -239,13 +240,15 @@ class ModuloGerenciador {
     void calculaAcaoControle_emX(float L, float posicaoX){
         float sinal_x = controladorX.correcao(L, posicaoX);
         unsigned long tempo_atual = micros();
-        fila.push(tempo_atual + 20000, CORRECAO_X, sinal_x);
+        driver.servoX.write(sinal_x);
+        // fila.push(tempo_atual + 20000, CORRECAO_X, sinal_x);
     }
 
     void calculaAcaoControle_emY(float L, float posicaoY){
         float sinal_y = controladorY.correcao(L, posicaoY);
         unsigned long tempo_atual = micros();
-        fila.push(tempo_atual + 20000, CORRECAO_Y, sinal_y);
+        driver.servoY.write(sinal_y);
+        // fila.push(tempo_atual + 20000, CORRECAO_Y, sinal_y);
 
     }
 
