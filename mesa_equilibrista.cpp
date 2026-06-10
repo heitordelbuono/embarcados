@@ -1,10 +1,23 @@
 #include <stdio.h>
 #define EVENTO_INCREMENTA_RELOGIO 0x01
 
+#include <stdio.h>
+#include "classes/Bluetooth.h"
+#include "classes/ControladorPID.h"
+#include "classes/DriverDeAtuacao.h"
+#include "classes/FilaDeEventos.h"
+#include "classes/ModuloGerenciador.h"
+#include "MaquinaEstados/maquinaEstados.h"
+
 int relogio_horas = 0, relogio_minutos = 0, relogio_segundos = 0;
 bool relogio_mudou_segundos = false;
+unsigned long tempo_atual = micros();
+int evento_atual;
+int estado_atual;
+int acao_atual;
+ModuloGerenciador gerenciador;
 
-void relogio_incrementa(void){
+/*void relogio_incrementa(void){
         relogio_mudou_segundos = true;
         relogio_segundos++;
         if (relogio_segundos == 60){
@@ -17,6 +30,7 @@ void relogio_incrementa(void){
         }
         push(millis() + 1000, EVENTO_INCREMENTE_RELOGIO, 0);
 }
+        */
 // Configuração do timer
 hw_timer_t* timer = nullptr;
 volatile bool flagTick = false;
@@ -34,16 +48,9 @@ void setupTickInterrupt(long uSecs) {
   timerAlarmEnable(timer);
 }
 
-unsigned long tempo_atual = micros();
-
-int evento_atual;
-int estado_atual;
-int acao_atual;
-
-void taskObterEvento(ModuloGerenciador gerenciador){ // verifica a existência de novos eventos para inserir na fila
-    for(;;){
+void taskObterEvento(void){ // verifica a existência de novos eventos para inserir na fila
         // EVENTO BOTÃO
-        if (gerenciador.bluetooth.botao_lido = false){
+        if (gerenciador.bluetooth.botao_lido == false){
             gerenciador.fila.push(tempo_atual + 20000, BOTAO, 0);
             gerenciador.bluetooth.botao_lido = true;
         }
@@ -59,16 +66,14 @@ void taskObterEvento(ModuloGerenciador gerenciador){ // verifica a existência d
             gerenciador.bluetooth.pos_y_atual < (L + 0.1) || gerenciador.bluetooth.pos_y_atual > (L - 0.1)){
                 gerenciador.fila.push(tempo_atual + 20000, EQUILIBRIO, 0);
             }
-        return;
-    }
 }
 
-void taskMaquinaDeEstados(){ // altera os estados e ações atuais com base no evento atual
+void taskMaquinaEstados(void){ // altera os estados e ações atuais com base no evento atual
     acao_atual = matrizTransicaoEstados[estado_atual][evento_atual].acao;
     estado_atual = matrizTransicaoEstados[estado_atual][evento_atual].prox_estado;
 }
 
-void taskCorrigePosicao(ModuloGerenciador gerenciador){ // calcula correção com controlador e envia para o driver de atuação
+void taskCorrigePosicao(void){ // calcula correção com controlador e envia para o driver de atuação
     gerenciador.controlador.calculaAcaoControle_emX(L, gerenciador.bluetooth.pos_x_atual);
     gerenciador.controlador.calculaAcaoControle_emY(L, gerenciador.bluetooth.pos_y_atual);
 }
@@ -77,7 +82,6 @@ void setup(){
     Serial.begin(115200);
     setupTickInterrupt(1000); // tick a cada 1000µs = 1ms
     iniciaMaquinaEstados();
-    ModuloGerenciador gerenciador;
     gerenciador.iniciaModuloGerenciador();
     estado_atual = ESPERANDO;
     evento_atual = NENHUM_EVENTO;
@@ -88,8 +92,10 @@ void loop(){
     if (flagTick){ // a cada 1ms
         flagTick = false; // limpo flag
         taskObterEvento(gerenciador); // verifico novos eventos para serem inseridos na fila
+        if (gerenciador.fila.numeroEventos > 0){
         evento_atual = gerenciador.fila.lerProximoEvento().tipo; // atualizo o evento atual
         taskMaquinaEstados(); // atualizo minha ação atual e meu estado atual com a máquina de estados
+        }
     }
     gerenciador.bluetooth.temDadoNovo(); // verifico constantemente os dados novos do bluetooth
     switch (acao_atual){
