@@ -2,9 +2,9 @@
 
 #include <stdio.h>
 
-#define Kp 200 // cte proporcional do controlado PD
-#define Td 1 // cte derivativa do controlador PD
-#define N 100 // parâmetro do filtro do controlador PD
+#define Kp 8 // cte proporcional do controlado PD
+#define Td 1.0 // cte derivativa do controlador PD
+#define N 100.0 // parâmetro do filtro do controlador PD
 #define deltat 0.02 // discretização do tempo
 #define L 0.095 // set point da bolinha
 

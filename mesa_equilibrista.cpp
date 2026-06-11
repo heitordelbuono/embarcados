@@ -1,7 +1,5 @@
 #include <stdio.h>
 #define EVENTO_INCREMENTA_RELOGIO 0x01
-
-#include <stdio.h>
 #include "classes/Bluetooth.h"
 #include "classes/ControladorPID.h"
 #include "classes/DriverDeAtuacao.h"
@@ -11,7 +9,6 @@
 
 int relogio_horas = 0, relogio_minutos = 0, relogio_segundos = 0;
 bool relogio_mudou_segundos = false;
-unsigned long tempo_atual = micros();
 int evento_atual;
 int estado_atual;
 int acao_atual;
@@ -51,20 +48,24 @@ void setupTickInterrupt(long uSecs) {
 void taskObterEvento(void){ // verifica a existência de novos eventos para inserir na fila
         // EVENTO BOTÃO
         if (gerenciador.bluetooth.botao_lido == false){
-            gerenciador.fila.push(tempo_atual + 20000, BOTAO, 0);
+            gerenciador.fila.push(micros() + 20000, BOTAO, 0);
             gerenciador.bluetooth.botao_lido = true;
         }
 
         // EVENTO DESEQUILIBRIO
-        if (gerenciador.bluetooth.pos_x_atual < (L - 0.1) || gerenciador.bluetooth.pos_x_atual > (L + 0.1) || 
-            gerenciador.bluetooth.pos_y_atual > (L + 0.1) || gerenciador.bluetooth.pos_y_atual < (L - 0.1)){
-                gerenciador.fila.push(tempo_atual + 20000, DESEQUILIBRIO, 0);
+        if (gerenciador.bluetooth.pos_x_atual < (240.0 - 20) || gerenciador.bluetooth.pos_x_atual > (240.0 + 20) || 
+            gerenciador.bluetooth.pos_y_atual > (240.0 + 20) || gerenciador.bluetooth.pos_y_atual < (240.0 - 20)){
+                if(gerenciador.fila.numeroEventos == 0 || gerenciador.fila.Evento[gerenciador.fila.numeroEventos-1].tipo != DESEQUILIBRIO){
+                    gerenciador.fila.push(micros() + 20000, DESEQUILIBRIO, 0);
+                }
             }
 
         // EVENTO EQUILIBRIO
-        if (gerenciador.bluetooth.pos_x_atual > (L - 0.1) || gerenciador.bluetooth.pos_x_atual < (L + 0.1) || 
-            gerenciador.bluetooth.pos_y_atual < (L + 0.1) || gerenciador.bluetooth.pos_y_atual > (L - 0.1)){
-                gerenciador.fila.push(tempo_atual + 20000, EQUILIBRIO, 0);
+        if (gerenciador.bluetooth.pos_x_atual > (240.0 - 20) && gerenciador.bluetooth.pos_x_atual < (240.0 + 20) && 
+            gerenciador.bluetooth.pos_y_atual < (240.0 + 20) && gerenciador.bluetooth.pos_y_atual > (240.0 - 20)){
+                if (gerenciador.fila.numeroEventos == 0 || gerenciador.fila.Evento[gerenciador.fila.numeroEventos-1].tipo != EQUILIBRIO){
+                    gerenciador.fila.push(micros() + 20000, EQUILIBRIO, 0);
+                }
             }
 }
 
@@ -74,8 +75,8 @@ void taskMaquinaEstados(void){ // altera os estados e ações atuais com base no
 }
 
 void taskCorrigePosicao(void){ // calcula correção com controlador e envia para o driver de atuação
-    gerenciador.controlador.calculaAcaoControle_emX(L, gerenciador.bluetooth.pos_x_atual);
-    gerenciador.controlador.calculaAcaoControle_emY(L, gerenciador.bluetooth.pos_y_atual);
+    gerenciador.calculaAcaoControle_emX(L, gerenciador.bluetooth.pos_x_atual);
+    gerenciador.calculaAcaoControle_emY(L, gerenciador.bluetooth.pos_y_atual);
 }
 
 void setup(){
@@ -90,23 +91,21 @@ void setup(){
 
 void loop(){
     if (flagTick){ // a cada 1ms
-        flagTick = false; // limpo flag
-        taskObterEvento(gerenciador); // verifico novos eventos para serem inseridos na fila
-        if (gerenciador.fila.numeroEventos > 0){
+        flagTick = false;
+        taskObterEvento(); // verifico novos eventos para serem inseridos na fila
+        if (gerenciador.fila.numeroEventos > 0 && micros() >= gerenciador.fila.Evento[0].instante ){// se houverem eventos na fila e estiver na hora de executar o primeiro da fila
         evento_atual = gerenciador.fila.lerProximoEvento().tipo; // atualizo o evento atual
         taskMaquinaEstados(); // atualizo minha ação atual e meu estado atual com a máquina de estados
         }
     }
-    gerenciador.bluetooth.temDadoNovo(); // verifico constantemente os dados novos do bluetooth
+    gerenciador.bluetooth.temDadoNovo(); // sempre verifico dados novos do bluetooth 
     switch (acao_atual){
         case A01: // Habilita sistema de equilíbrio
             gerenciador.bluetooth.sistema_ligado = true; // defino estado do sistema como ligado
         break;
 
         case A02: // Corrige posição com o controlador PD
-            if (gerenciador.bluetooth.sistema_ligado){
-            taskCorrigePosicao(gerenciador); // Calcula sinais de correção com controlador e envia para os servos
-            }
+            // ...
         break;
 
         case A03: // Deixa de solicitar correção ao controlador PD
@@ -117,4 +116,13 @@ void loop(){
             gerenciador.bluetooth.sistema_ligado = false; // defino sistema como desligado
         break;
     }
+
+    static unsigned long ultimo_tempo_pid = 0;
+    if(estado_atual == EQUILIBRANDO){
+        if (micros() - ultimo_tempo_pid >= 20000 && gerenciador.bluetooth.sistema_ligado){
+            taskCorrigePosicao();// Calcula sinais de correção com controlador e envia para os servos
+            ultimo_tempo_pid = micros();
+        }
+    }
+    acao_atual = NENHUMA_ACAO;
 }

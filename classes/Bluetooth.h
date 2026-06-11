@@ -9,7 +9,7 @@ class Bluetooth {
     float pos_y_atual;
     bool sistema_ligado = false;
     bool flag_calibra = false;
-    bool botao_lido = false;
+    bool botao_lido = true;
 
     // incializa o modulo bluetooth
     void iniciaConexao(void);
