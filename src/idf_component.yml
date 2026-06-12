@@ -1,0 +1,5 @@
+## Dependencias (ESP-IDF Component Manager).
+## A camera so e usada a partir da Fase 1, mas ja fica declarada.
+## O primeiro build precisa de internet para baixar o componente.
+dependencies:
+  espressif/esp32-camera: "*"

@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "gerenciador.cpp"
+        "controle_pid.cpp"
+        "driver_atuacao.cpp"
+        "bluetooth.cpp"
+        "visao.cpp"
+        "fila_eventos.cpp"
+        "maquina_estados.cpp"
+        "wifi_stream.cpp"
+        "camera_teste.cpp"
+    INCLUDE_DIRS
+        "."
+        "../include"
+    REQUIRES
+        esp_wifi
+        esp_http_server
+        nvs_flash
+        esp_netif
+        driver
+)

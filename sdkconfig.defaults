@@ -1,0 +1,30 @@
+# ── PSRAM (WROVER tem 8 MB) ────────────────────────────────
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_BOOT_INIT=y
+
+# ── CPU 240 MHz ─────────────────────────────────────────────
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# ── FreeRTOS tick 1 ms ──────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+
+# ── Tamanho de flash / particao ─────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# ── HTTP server: buffer maior p/ headers ────────────────────
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# ── WiFi ────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+
+# ── NVS (necessario para WiFi e para salvar config da cor) ──
+CONFIG_NVS_ASSERT_ERROR_CHECK=n
+
+# ── Log: so INFO e acima (descomente WARNING p/ menos verboso)
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# CONFIG_LOG_DEFAULT_LEVEL_WARNING=y
