@@ -9,6 +9,7 @@ idf_component_register(
         "fila_eventos.cpp"
         "maquina_estados.cpp"
         "wifi_stream.cpp"
+        "wifi_controle.cpp"
         "camera_teste.cpp"
     INCLUDE_DIRS
         "."
@@ -19,4 +20,5 @@ idf_component_register(
         nvs_flash
         esp_netif
         driver
+        espressif__esp_jpeg
 )

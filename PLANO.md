@@ -105,17 +105,22 @@ tarefas FreeRTOS criadas (corpos com `TODO`). Compila e roda (sem fazer nada út
   `SERVO_MIN/MAX/NEUTRO` em `config.h`).
 - Entregável: comandar os dois servos de forma controlada e segura.
 
-### ⬜ Etapa 3 — Reconhecer a mesa
-- Identificar na imagem a região da mesa (cinza) e definir a **ROI da mesa** (a área
-  útil onde a bola pode estar), descartando o fundo.
-- Fixar a origem (0,0) no centro dessa região.
-- Entregável: saber exatamente qual recorte da imagem é a mesa.
+### ✅ Etapa 3 — Reconhecer a mesa *(FEITO)*
+- ROI da mesa definida por 4 cantos calibrados (`MESA_EXT_*` / `MESA_ROI_*`),
+  com as retas extrapoladas quando a mesa não cabe inteira no frame.
+- Origem (0,0) no centro, via **homografia 3×3** (corrige perspectiva).
+- LUT de varredura por linha pré-computada.
 
-### ⬜ Etapa 4 — Reconhecer a bola e achar as coordenadas
-- Threshold de cor (amarelo) em RGB565 + centróide → `(cx, cy)`.
-- Converter pra origem no centro: `x = cx − CENTRO_X`, `y = CENTRO_Y − cy`.
-- Imprimir `x, y, contagem` na serial e validar movendo a bola na mão.
-- Entregável: posição da bola confiável saindo da `visao.detecta()`.
+### ✅ Etapa 4 — Reconhecer a bola e achar as coordenadas *(FEITO — ver [docs/VISAO.md](docs/VISAO.md))*
+- Pipeline reescrito e otimizado: câmera **determinística** (exposição/ganho/AWB
+  fixos + calibração na NVS) → referência local (grade 4×4 **ou** subtração de
+  fundo) → **componentes conexos** (run-length + union-find) → escolha do blob
+  por **score** → **centróide ponderado** sub-pixel → homografia px→cm →
+  **filtro α-β** (posição suave + velocidade + gating anti-teleporte).
+- Debug visual corrigido (imagem original + overlays; Sobel opcional) e
+  telemetria CSV. Comandos na serial: `f g G c e r t ?`.
+- Entregável: `Medicao { x, y, vx, vy, achou, dt }` confiável saindo de
+  `visao.detecta()`.
 
 ### ⬜ Etapa 5 — Fechar a malha (PID equilibrando)
 - Ligar visão → `gerenciador.calculaAcaoControle()` → fila de eventos → servos.
@@ -124,21 +129,24 @@ tarefas FreeRTOS criadas (corpos com `TODO`). Compila e roda (sem fazer nada út
 
 ---
 
-## 4. Próximos passos (refinamentos — depois que o básico funcionar)
+## 4. Próximos passos (refinamentos)
 
-- **ROI tracking:** varrer só uma janela (~30 %) em volta da última posição da bola
-  (`ROI_FRACAO`), com fallback pra varredura total após `ROI_PERDE_FRAMES` sem achar.
-  Ganho principal: robustez (rejeita manchas espúrias) e habilita a predição.
-- **Predição (Kalman/velocidade):** centrar a janela onde a bola *vai estar* e usar a
-  **velocidade filtrada como termo D** do PID (D suave, sem derivar posição ruidosa).
-- **Auto-calibração de cor:** bola no centro + comando → firmware aprende a cor e
-  salva os limiares na **NVS** (permite trocar a cor da bola sem recompilar).
-- **YUV422 em vez de RGB565:** separa brilho de cor (como HSV) → robusto a reflexos;
-  necessário pra bola branca sobre mesa cinza.
-- **Bluetooth (BLE):** botão liga/desliga, mover o **setpoint** (equilibrar fora do
-  centro, ex.: mais à direita), tunar ganhos ao vivo e enviar **telemetria** pro
-  celular (debug sem cabo).
-- **Parâmetros ajustáveis em runtime** (serial/BT) pra tunar o PID sem recompilar.
+**Já implementados na visão** (detalhes em [docs/VISAO.md](docs/VISAO.md)):
+- ✅ **ROI tracking** (`ROI_FRACAO` / `ROI_PERDE_FRAMES`).
+- ✅ **Filtro α-β** → posição suave + **velocidade** estimada (pronta para virar o
+  termo D do PID) + gating anti-teleporte.
+- ✅ **Câmera determinística** com calibração de exposição/ganho salva na **NVS**.
+- ✅ **Subtração de fundo** da mesa vazia (alternativa à grade de iluminação).
+- ✅ **Homografia** para px→cm (corrige perspectiva).
+
+Ainda pendentes:
+- **Predição centrando a janela** onde a bola *vai estar* (hoje a janela segue a
+  última posição; falta usar a velocidade do α-β para projetar em pixels).
+- **Compensar a inclinação da mesa** na projeção (a câmera vê a bola com o prato
+  inclinado; corrigir com o ângulo comandado). Refinamento de 2ª ordem.
+- **Auto-calibração de cor** (limiares de cor na NVS), se for usar bola colorida.
+- **Bluetooth (BLE):** botão liga/desliga, setpoint, ganhos e telemetria no celular.
+- **Parâmetros do PID ajustáveis em runtime** (serial/BT) — *parte de controle*.
 
 ---
 

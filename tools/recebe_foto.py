@@ -3,12 +3,13 @@
 # Uso:
 #   1) FECHE o 'pio device monitor' (so um programa pode usar a porta)
 #   2) python3 tools/recebe_foto.py [porta] [baud]
-#   3) aperte EN na placa para ela rebootar e mandar a foto
+#   3) o script tenta resetar a placa pela serial automaticamente
 #
 # Salva como foto.jpg na pasta atual.
 
 import sys
 import base64
+import time
 
 try:
     import serial  # pip install pyserial
@@ -18,12 +19,24 @@ except ImportError:
 
 porta = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyUSB0"
 baud  = int(sys.argv[2]) if len(sys.argv) > 2 else 115200
+auto_reset = "--no-reset" not in sys.argv
 
 INICIO = "===FOTO_BASE64_INICIO==="
 FIM    = "===FOTO_BASE64_FIM==="
 
-print(f"Abrindo {porta} @ {baud}. Aperte EN na placa para mandar a foto...")
+print(f"Abrindo {porta} @ {baud}.")
 ser = serial.Serial(porta, baud, timeout=20)
+
+if auto_reset:
+    print("Resetando a ESP32 pela serial...")
+    ser.dtr = False   # GPIO0 alto: boot normal, nao bootloader
+    ser.rts = True    # EN baixo
+    time.sleep(0.15)
+    ser.rts = False   # EN alto: reinicia a aplicacao
+    time.sleep(0.5)
+    ser.reset_input_buffer()
+else:
+    print("Auto-reset desativado. Reinicie a placa manualmente para mandar a foto.")
 
 capturando = False
 linhas = []
@@ -31,7 +44,7 @@ linhas = []
 while True:
     raw = ser.readline()
     if not raw:
-        print("Timeout esperando dados. A placa mandou a foto? Aperte EN.")
+        print("Timeout esperando dados. A placa mandou a foto? Tente sem monitor aberto, ou use --no-reset e reinicie manualmente.")
         continue
     linha = raw.decode(errors="ignore").strip()
 

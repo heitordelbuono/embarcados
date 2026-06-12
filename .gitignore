@@ -5,3 +5,10 @@ managed_components/
 sdkconfig
 sdkconfig.old
 dependencies.lock
+
+# Artefatos de calibracao/debug locais
+reports/
+debug_bola.png
+debug_bola.ppm
+sweep_gray.csv
+sweep_gray.png

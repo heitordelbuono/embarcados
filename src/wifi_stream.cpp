@@ -12,6 +12,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -73,10 +74,11 @@ static esp_err_t handler_stream(httpd_req_t* req) {
         camera_fb_t* fb = esp_camera_fb_get();
         int64_t t1 = esp_timer_get_time();
         if (!fb) { ESP_LOGE(TAG, "falha ao capturar frame"); break; }
+        size_t frame_len = fb->len;
 
-        int hdr_len = snprintf(hdr_buf, sizeof(hdr_buf), FRAME_HDR, fb->len);
+        int hdr_len = snprintf(hdr_buf, sizeof(hdr_buf), FRAME_HDR, frame_len);
         res  = httpd_resp_send_chunk(req, hdr_buf, hdr_len);
-        if (res == ESP_OK) res = httpd_resp_send_chunk(req, (char*)fb->buf, fb->len);
+        if (res == ESP_OK) res = httpd_resp_send_chunk(req, (char*)fb->buf, frame_len);
         if (res == ESP_OK) res = httpd_resp_send_chunk(req, FRAME_TAIL, strlen(FRAME_TAIL));
         int64_t t2 = esp_timer_get_time();
 
@@ -87,7 +89,7 @@ static esp_err_t handler_stream(httpd_req_t* req) {
         uint64_t envio_us = (uint64_t)(t2 - t1);
         captura_soma_us += captura_us;
         envio_soma_us += envio_us;
-        bytes_soma += fb->len;
+        bytes_soma += frame_len;
         if (captura_us > captura_max_us) captura_max_us = captura_us;
         if (envio_us > envio_max_us) envio_max_us = envio_us;
 

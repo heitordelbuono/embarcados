@@ -15,11 +15,14 @@ public:
 class ControladorPID {
 public:
     float kp;              // Kp
+    float ki;              // Ki
     float kd;              // Kp*Td
     float tau;             // Td/N
     float dt;
+    float integral;        // acumulador do termo integral (com anti-windup)
     FilteredDerivative derivadaFiltrada;
 
     void  inicia();
+    void  resetIntegral() { integral = 0.0f; }
     float correcao(float setpoint, float posicao);   // sinal p/ o servo
 };

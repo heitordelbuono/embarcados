@@ -22,7 +22,9 @@ public:
     float setpointY   = SETPOINT_Y_PADRAO;
 
     void inicia();
-    void calculaAcaoControle(const Medicao& m);   // roda os PIDs e agenda atuacao
+    // roda os PIDs e agenda atuacao. ativaX/ativaY permitem testar 1 eixo de
+    // cada vez: o eixo desativado recebe 0 (mesa plana naquele eixo).
+    void calculaAcaoControle(const Medicao& m, bool ativaX = true, bool ativaY = true);
     void processaFila();                          // executa as correcoes vencidas
     void trataEvento(int evento);                 // avanca a maquina de estados
 };
