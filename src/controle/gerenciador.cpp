@@ -1,5 +1,4 @@
 #include "gerenciador.h"
-#include "maquina_estados.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
@@ -8,19 +7,25 @@ static const char* TAG = "GEREN";
 void ModuloGerenciador::inicia() {
     controladorX.inicia();
     controladorY.inicia();
-    bluetooth.iniciaConexao();
     // A camera (esp_camera_init) reconfigura o IO MUX e atropela o barramento
     // I2C se ele for criado antes. Por isso a camera vem PRIMEIRO e o servo
     // (driver_atuacao) configura o I2C por ULTIMO, ficando dono dos pinos.
     visao.inicia();
     driver.iniciaMotores();
     driver.neutro();
-    estadoAtual = ESPERANDO;
     ESP_LOGI(TAG, "gerenciador iniciado");
 }
 
 void ModuloGerenciador::calculaAcaoControle(const Medicao& m, bool ativaX, bool ativaY) {
     if (!m.achou) return;
+    // Usa o dt real entre frames (medido pelo filtro alfa-beta) para que a
+    // derivada e o integral do PID sejam corretos independente do FPS atual.
+    if (m.dt > 0.005f && m.dt < 0.5f) {
+        controladorX.dt = m.dt;
+        controladorX.derivadaFiltrada.dt = m.dt;
+        controladorY.dt = m.dt;
+        controladorY.derivadaFiltrada.dt = m.dt;
+    }
     // Erro = setpoint - posicao. setpointX/Y sao (0,0) = centro da mesa por padrao.
     float sinalX = ativaX ? controladorX.correcao(setpointX, m.x) : 0.0f;
     float sinalY = ativaY ? controladorY.correcao(setpointY, m.y) : 0.0f;
@@ -44,10 +49,4 @@ void ModuloGerenciador::processaFila() {
         if      (e.tipo == CORRECAO_X) driver.enviaCorrecaoX(e.dado);
         else if (e.tipo == CORRECAO_Y) driver.enviaCorrecaoY(e.dado);
     }
-}
-
-void ModuloGerenciador::trataEvento(int evento) {
-    Transicao t = matrizTransicao[estadoAtual][evento];
-    // TODO: executar a acao t.acao (ligar/desligar driver, etc.)
-    estadoAtual = t.proxEstado;
 }

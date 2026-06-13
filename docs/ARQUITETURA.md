@@ -1,84 +1,82 @@
-# Arquitetura Atual e Plano de Limpeza
+# Arquitetura
 
-## Diagrama
+## Visão geral
+
+Um único firmware de produção (`src/`) roda a mesa: câmera → detecção da bola →
+PID → servos, com uma interface no celular por WiFi. Os testes de bring-up de
+hardware ficam separados em `apps/` e não entram no build normal.
 
 ```text
-Serial/USB
-   |
-   v
-main.cpp (ETAPA 4)
-   |-- parser de comandos
-   |     |-- sensor: + - . , a c j k l q S
-   |     |-- visao: f g G e r m t 0cx/0cy ux/uy
-   |     |-- servo: x/y manual, 0x/0y, z*, w/b/n/T
-   |     '-- PID: o/ox/oy P/p I/i D/d
-   |
-   |-- loop de tempo real
-   |     |-- Visao::detecta()
-   |     |-- ModuloGerenciador::calculaAcaoControle()
-   |     |-- DriverAtuacao::enviaCorrecaoX/Y()
-   |     '-- status a cada 5 s
-   |
-   v
-gerenciador.cpp
-   |-- ControladorPID X/Y
-   |-- FilaDeEventos
-   '-- DriverAtuacao
-
-visao.cpp
-   |-- camera/sensor OV2640
-   |-- decode JPEG -> RGB565
-   |-- NVS camera/centro
-   |-- geometria/homografia da mesa
-   |-- referencia: grade local ou fundo capturado com g
-   |-- segmentacao da bola
-   |-- filtro alfa-beta
-   '-- debug PPM/base64/overlays
+ESP32 (FreeRTOS)
+ CORE 1 (tempo real)                         CORE 0 (rede)
+  tarefa_principal (main.cpp)                 wifi_controle.cpp
+   |-- Visao::detecta()                        |-- AP "MesaPID"
+   |-- comandos_processa()  (serial)           |-- HTTP: GET /  (canvas)
+   |-- PID / danca / manual -> servos          |-- HTTP: GET /s (posicao JSON)
+   |-- g.processaFila()                         '-- HTTP: GET /sp (clique = setpoint)
+   '-- status a cada 5 s
 ```
 
-## Diagnostico
+Rodar o loop no `app_main` (core 0) junto do WiFi derrubava o FPS e estourava o
+watchdog do IDLE0; por isso o loop é uma task fixada no core 1.
 
-`main.cpp` esta inchado porque junta quatro coisas diferentes: selecao de etapa, console serial, rotina de controle em tempo real e testes/sweeps. O trecho da ETAPA 4 e o mais critico: o parser esta dentro do loop principal, entao cada comando novo aumenta o miolo que deveria ser so captura, controle e status.
+## Árvore de arquivos
 
-`visao.cpp` tambem esta com muitas responsabilidades. Ele controla hardware da camera, faz conversao de imagem, guarda calibracao na NVS, calcula homografia, segmenta a bola, filtra a posicao e ainda gera imagem de debug. Isso funcionou para evoluir rapido, mas agora qualquer bug visual parece bug de deteccao, e qualquer ajuste de sensor fica misturado com geometria.
+```text
+src/
+  main.cpp              app_main + loop principal (core 1)
+  comandos_serial.*     ajuda + parser dos comandos do teclado
+  visao/
+    visao.{cpp,h}       camera/sensor + geometria + segmentacao + filtro
+    debug_visao.*       overlays e envio do frame anotado (PPM/base64)
+    visao_interno.h     PontoF + leitura de pixel (compartilhado)
+  controle/
+    gerenciador.*       amarra visao + 2 PIDs + driver + fila
+    controle_pid.*      ControladorPID (PD com derivada filtrada)
+    driver_atuacao.*    PCA9685 -> servos
+    fila_eventos.*      escalonador da atuacao (atraso de +20 ms)
+  comms/
+    wifi_controle.*     AP + servidor HTTP (interface no celular)
+include/
+  config.h              TODOS os parametros (pinos, cor, PID, servo, ROI...)
+  tipos.h               struct Medicao, DadosEvento
+apps/                   testes de hardware (fora do build) — ver apps/README.md
+```
 
-## JPEG rosa
+## Fluxo de dados
 
-A suspeita mais forte nao e exposicao. Exposicao errada deixaria a imagem clara/escura ou estourada tambem no JPEG original. O rosa apareceu no caminho em que o firmware decodifica JPEG para RGB565 e depois gera o PPM/debug.
+`Visao::detecta()` devolve uma `Medicao { x, y, vx, vy, achou, dt }` em cm com
+origem no centro da mesa. O loop a usa para (a) atualizar a posição publicada na
+web (`g_pos_web`), (b) ler o setpoint vindo do clique no celular (`g_setpoint_*`)
+e (c) rodar o PID, que agenda a correção na `FilaDeEventos`; `processaFila()`
+aplica a correção vencida nos servos via `DriverAtuacao`.
 
-O componente `esp32-camera` chama `esp_jpeg_decode` por `jpg2rgb565()` com `swap_color_bytes = 0`. No ESP32, o decoder ROM trabalha em RGB888 e a conversao para RGB565 grava o pixel em little-endian. O nosso `rgb565_at()` le como big-endian, igual ao frame RGB565 da camera. Resultado: bytes trocados e cores puxando para magenta/rosa.
+## Pipeline da visão (resumo)
 
-Correcao aplicada: depois de `jpg2rgb565()`, o buffer decodificado e convertido para RGB565 big-endian uma vez. Assim `pixel_luma()`, overlays e PPM continuam usando uma unica convencao.
+Captura JPEG QQVGA → decodifica on-chip para RGB565 → referência local (grade de
+iluminação 4×4 **ou** fundo da mesa vazia) → candidatos por brilho → componentes
+conexos (run-length + union-find) → escolhe o blob por score → centróide
+ponderado sub-pixel → homografia px→cm → filtro α-β (posição + velocidade).
+Detalhes em [VISAO.md](VISAO.md).
 
-## O Que Da Para Tirar ou Isolar
+## Nota histórica: JPEG "rosa"
 
-- `main.cpp`: mover parser serial para `console_comandos.*`.
-- `main.cpp`: mover `sweep_sensor()` para `tools_runtime.*` ou para dentro de uma classe de diagnostico.
-- `main.cpp`: manter no `app_main()` so inicializacao, loop de frame, atuacao e status.
-- `visao.cpp`: separar `visao_camera.*` para init/reinit/sensor/AEC/AGC/AWB/JPEG.
-- `visao.cpp`: separar `visao_debug.*` para PPM/base64/desenho.
-- `visao.cpp`: separar `visao_geometria.*` para mesa, homografia, centro manual.
-- `visao.cpp`: deixar `visao.cpp` orquestrando captura -> segmentacao -> filtro -> Medicao.
+`jpg2rgb565()` (do componente `esp32-camera`) grava RGB565 em little-endian,
+enquanto o resto do código lê big-endian (igual ao frame buffer da câmera). Sem
+corrigir, o debug em JPEG sai com canais trocados (rosa/magenta). A correção está
+em `decodifica_jpeg()` (visao.cpp): troca os bytes uma vez após o decode.
 
-## Plano Seguro
-
-1. Congelar comportamento atual com build passando e comandos de campo documentados.
-2. Extrair o parser serial da ETAPA 4 sem alterar comandos.
-3. Extrair debug PPM/overlays da visao.
-4. Extrair camera/sensor/decode da visao.
-5. So depois disso limpar ETAPAs antigas ou codigo de teste que nao esta sendo usado.
-
-## Comandos de Campo Mais Importantes
+## Comandos de campo mais importantes (serial)
 
 ```text
 g       captura fundo da mesa vazia para a deteccao
-f       manda frame anotado
-j       alterna GRAYSCALE/JPEG
+f       manda frame anotado pela serial
+m       calibra geometria/homografia da mesa
+c       calibra a camera (auto -> congela -> salva NVS)
 q       imprime sensor, centro, neutro e PID
-0x1     soma 1 grau no zero do servo X
-0y-1    tira 1 grau do zero do servo Y
-0cx1    move centro X em +0.1 cm
-0cy-1   move centro Y em -0.1 cm
-0s      salva centro e zero dos servos
-00      reseta centro e zero dos servos
+o/ox/oy liga PID nos dois eixos / so X / so Y
+P p D d ajusta Kp (+/-1) e Kd (+/-0.1)
+0x1     soma 1 grau no zero do servo X      |  0y-1  tira 1 grau do servo Y
+0cx1    move centro X em +0.1 cm            |  0cy-1 move centro Y em -0.1 cm
+0s      salva centro e zero dos servos      |  00    reseta ambos
 ```

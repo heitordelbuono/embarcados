@@ -12,15 +12,24 @@ CONFIG_FREERTOS_HZ=1000
 
 # ── Tamanho de flash / particao ─────────────────────────────
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# ── HTTP server: buffer maior p/ headers ────────────────────
+# ── HTTP server: buffer maior p/ headers + WebSocket ────────
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_WS_SUPPORT=y
 
 # ── WiFi ────────────────────────────────────────────────────
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+
+# ── lwIP: buffer TCP maior p/ o WebSocket aguentar engasgos ──
+# 5760 (=4*MSS, ~3s de ticks) -> 11520 (=8*MSS, ~6s). Custa RAM, temos folga.
+# Evita que um blip do WiFi encha o buffer e o send falhe com EAGAIN (err 11),
+# que derrubava o socket. Multiplos de MSS=1440.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
+CONFIG_LWIP_TCP_WND_DEFAULT=11520
 
 # ── NVS (necessario para WiFi e para salvar config da cor) ──
 CONFIG_NVS_ASSERT_ERROR_CHECK=n

@@ -2,8 +2,8 @@
 //  visao.cpp - Deteccao da bola (pipeline otimizado)
 //
 //  Etapas do processamento (ver docs/VISAO.md):
-//   1. Captura grayscale QQVGA (sensor com exposicao/ganho/AWB FIXOS).
-//      Opcional: captura em JPEG e DECODIFICA on-chip p/ RGB565 (CAM_CAPTURA_JPEG).
+//   1. Captura JPEG QQVGA (sensor com exposicao/ganho/AWB FIXOS) e
+//      DECODIFICA on-chip para RGB565.
 //   2. Referencia local: grade de iluminacao (4x4) OU fundo da mesa vazia.
 //   3. Candidatos: luma - referencia >= delta  (e acima do piso absoluto).
 //   4. Componentes conexos: run-length + union-find numa unica passada.
@@ -11,8 +11,13 @@
 //   6. Centroide ponderado pela intensidade (sub-pixel) + refino opcional.
 //   7. Homografia 3x3 (pre-computada) projeta pixel -> cm no plano da mesa.
 //   8. Filtro alfa-beta: suaviza a posicao e estima a velocidade (cm/s).
+//
+//  O render dos overlays de debug fica em debug_visao.cpp; a leitura de
+//  pixel e o tipo PontoF, em visao_interno.h.
 // ============================================================
 #include "visao.h"
+#include "visao_interno.h"
+#include "debug_visao.h"
 #include "config.h"
 #include "esp_camera.h"
 #include "img_converters.h"
@@ -37,11 +42,7 @@ static const int MEDIA_INTERVALO = VISAO_MEDIA_INTERVALO < 1 ? 1 : VISAO_MEDIA_I
 // ---------- buffers (PSRAM) ----------
 static uint8_t* s_bg = NULL;          // fundo da mesa vazia (referencia opcional)
 static bool     s_bg_valido = false;
-static bool     s_frame_grayscale = false;
 static uint8_t* s_rgb565 = NULL;      // matriz RGB565 decodificada do JPEG
-static bool     s_modo_jpeg = (CAM_CAPTURA_JPEG != 0);  // modo de captura (runtime)
-
-struct PontoF { float x; float y; };
 
 static PontoF s_mesa_ext[4];          // cantos da mesa (px, resolucao de deteccao)
 static PontoF s_mesa_roi[4];          // ROI util dentro da mesa (px)
@@ -174,11 +175,6 @@ static PontoF centro_origem_px() {
 //  Utilidades
 // ============================================================
 static int clamp_int(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
-#if FILTRO_GATING_ATIVO
-static float distf(float ax, float ay, float bx, float by) {
-    float dx = ax - bx, dy = ay - by; return sqrtf(dx * dx + dy * dy);
-}
-#endif
 
 static void bbox_quad(const PontoF q[4], int& x0, int& y0, int& x1, int& y1) {
     float minx = q[0].x, maxx = q[0].x, miny = q[0].y, maxy = q[0].y;
@@ -194,6 +190,7 @@ static void bbox_quad(const PontoF q[4], int& x0, int& y0, int& x1, int& y1) {
     y1 = clamp_int((int)ceilf(maxy),  0, CAM_ALTURA - 1);
 }
 
+#if !VISAO_ROI_LIVRE && !VISAO_ROI_RETANGULO
 static bool faixa_linha_quad(const PontoF q[4], int y, int& x0, int& x1) {
     float sy = (float)y + 0.5f;
     float xs[4];
@@ -212,6 +209,7 @@ static bool faixa_linha_quad(const PontoF q[4], int y, int& x0, int& x1) {
     x1 = clamp_int((int)floorf(xs[1]), 0, CAM_LARGURA - 1);
     return x0 <= x1;
 }
+#endif
 
 // Pre-computa LUTs uma vez: faixa da ROI por linha + indice de celula por x/y.
 static void prepara_luts() {
@@ -226,12 +224,19 @@ static void prepara_luts() {
   #else
     const PontoF* roiPoly = s_mesa_roi;
   #endif
+    bbox_quad(roiPoly, s_mb_x0, s_mb_y0, s_mb_x1, s_mb_y1);
+  #if VISAO_ROI_RETANGULO
+    for (int y = 0; y < CAM_ALTURA; y++) {
+        if (y >= s_mb_y0 && y <= s_mb_y1) { s_roi_x0[y] = s_mb_x0; s_roi_x1[y] = s_mb_x1; }
+        else { s_roi_x0[y] = 1; s_roi_x1[y] = 0; }
+    }
+  #else
     for (int y = 0; y < CAM_ALTURA; y++) {
         int a, b;
         if (faixa_linha_quad(roiPoly, y, a, b)) { s_roi_x0[y] = a; s_roi_x1[y] = b; }
         else { s_roi_x0[y] = 1; s_roi_x1[y] = 0; } // vazio
     }
-    bbox_quad(roiPoly, s_mb_x0, s_mb_y0, s_mb_x1, s_mb_y1);
+  #endif
 #endif
 
     int mbw = s_mb_x1 - s_mb_x0 + 1;
@@ -245,32 +250,6 @@ static void prepara_luts() {
         s_celly[y] = (uint8_t)clamp_int(c, 0, GRADE_NY - 1);
     }
 }
-
-// ---------- leitura de pixel ----------
-static uint16_t rgb565_at(const uint8_t* buf, int idx) {
-    return ((uint16_t)buf[2 * idx] << 8) | buf[2 * idx + 1];
-}
-static void rgb565_split(uint16_t p, int& r, int& g, int& b) {
-    r = ((p >> 11) & 0x1F) * 255 / 31;
-    g = ((p >> 5)  & 0x3F) * 255 / 63;
-    b = ( p        & 0x1F) * 255 / 31;
-}
-static int luma_from_rgb(int r, int g, int b) { return (77 * r + 150 * g + 29 * b) >> 8; }
-
-static inline int pixel_luma(const camera_fb_t* fb, int idx) {
-    if (fb->format == PIXFORMAT_GRAYSCALE) return fb->buf[idx];
-    int r, g, b; rgb565_split(rgb565_at(fb->buf, idx), r, g, b);
-    return luma_from_rgb(r, g, b);
-}
-#if BOLA_MODO_COR
-static int max3(int a, int b, int c) { int m = a > b ? a : b; return m > c ? m : c; }
-static int min3(int a, int b, int c) { int m = a < b ? a : b; return m < c ? m : c; }
-static inline int pixel_chroma(const camera_fb_t* fb, int idx) {
-    if (fb->format == PIXFORMAT_GRAYSCALE) return 0;
-    int r, g, b; rgb565_split(rgb565_at(fb->buf, idx), r, g, b);
-    return max3(r, g, b) - min3(r, g, b);
-}
-#endif
 
 // ============================================================
 //  Decode JPEG -> RGB565 (esta versao do esp32-camera so expoe jpg2rgb565)
@@ -307,13 +286,8 @@ static inline bool pixel_candidato(const camera_fb_t* fb, int x, int y, int idx,
     int ref = ref_em(x, y, idx);
     int peso = luma - ref;
     if (peso_out) *peso_out = peso;
-    bool cand = (luma >= BOLA_Y_MIN) && (peso >= BOLA_DELTA_REF);
-#if BOLA_MODO_COR
-    if (cand && pixel_chroma(fb, idx) > BOLA_CHROMA_MAX) cand = false;
-#else
     (void)x; (void)y;
-#endif
-    return cand;
+    return (luma >= BOLA_Y_MIN) && (peso >= BOLA_DELTA_REF);
 }
 
 // Recalcula a grade de iluminacao amostrando a ROI esparsamente.
@@ -351,159 +325,6 @@ static inline int uf_find(int i) {
 static inline void uf_union(int a, int b) {
     int ra = uf_find(a), rb = uf_find(b);
     if (ra != rb) s_runs[rb].parent = ra;
-}
-
-// ============================================================
-//  Desenho (debug)
-// ============================================================
-static void put_px(uint8_t* buf, int x, int y, uint16_t cor) {
-    if (x < 0 || x >= CAM_LARGURA || y < 0 || y >= CAM_ALTURA) return;
-    int idx = y * CAM_LARGURA + x;
-    if (s_frame_grayscale) {
-        int r, g, b; rgb565_split(cor, r, g, b);
-        buf[idx] = (uint8_t)luma_from_rgb(r, g, b);
-        return;
-    }
-    buf[2 * idx] = (uint8_t)(cor >> 8);
-    buf[2 * idx + 1] = (uint8_t)(cor & 0xFF);
-}
-static void linha_h(uint8_t* buf, int x0, int x1, int y, uint16_t cor) {
-    if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
-    for (int x = x0; x <= x1; x++) put_px(buf, x, y, cor);
-}
-static void linha_v(uint8_t* buf, int x, int y0, int y1, uint16_t cor) {
-    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
-    for (int y = y0; y <= y1; y++) put_px(buf, x, y, cor);
-}
-static void linha(uint8_t* buf, int x0, int y0, int x1, int y1, uint16_t cor) {
-    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-    for (;;) {
-        put_px(buf, x0, y0, cor);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
-    }
-}
-static void poligono(uint8_t* buf, const PontoF q[4], uint16_t cor) {
-    for (int i = 0; i < 4; i++) {
-        int j = (i + 1) & 3;
-        linha(buf, (int)lroundf(q[i].x), (int)lroundf(q[i].y),
-              (int)lroundf(q[j].x), (int)lroundf(q[j].y), cor);
-    }
-}
-static void retangulo(uint8_t* buf, int x0, int y0, int x1, int y1, uint16_t cor) {
-    linha_h(buf, x0, x1, y0, cor); linha_h(buf, x0, x1, y1, cor);
-    linha_v(buf, x0, y0, y1, cor); linha_v(buf, x1, y0, y1, cor);
-}
-static void cruz(uint8_t* buf, int x, int y, uint16_t cor) {
-    linha_h(buf, x - 4, x + 4, y, cor); linha_v(buf, x, y - 4, y + 4, cor);
-}
-static void overlay_sobel(uint8_t* buf, const camera_fb_t* fb) {
-    uint8_t linha_ant[CAM_LARGURA];
-    uint8_t linha_at[CAM_LARGURA];
-    
-    // Inicializa a linha anterior (y = 0)
-    for (int x = 0; x < CAM_LARGURA; x++) {
-        linha_ant[x] = pixel_luma(fb, x);
-    }
-    
-    for (int y = 1; y < CAM_ALTURA - 1; y++) {
-        // Copia a linha atual original antes de modificá-la
-        for (int x = 0; x < CAM_LARGURA; x++) {
-            linha_at[x] = pixel_luma(fb, y * CAM_LARGURA + x);
-        }
-        
-        for (int x = 1; x < CAM_LARGURA - 1; x++) {
-            int i = y * CAM_LARGURA + x;
-            
-            // Linha y-1 (linha anterior)
-            int luma_tl = linha_ant[x - 1];
-            int luma_tc = linha_ant[x];
-            int luma_tr = linha_ant[x + 1];
-            
-            // Linha y (linha atual)
-            int luma_l = linha_at[x - 1];
-            int luma_r = linha_at[x + 1];
-            
-            // Linha y+1 (linha seguinte - ainda não modificada no buffer)
-            int luma_bl = pixel_luma(fb, i + CAM_LARGURA - 1);
-            int luma_bc = pixel_luma(fb, i + CAM_LARGURA);
-            int luma_br = pixel_luma(fb, i + CAM_LARGURA + 1);
-            
-            int gx = -luma_tl + luma_tr - 2 * luma_l + 2 * luma_r - luma_bl + luma_br;
-            int gy = -luma_tl - 2 * luma_tc - luma_tr + luma_bl + 2 * luma_bc + luma_br;
-            
-            if (abs(gx) + abs(gy) >= BORDA_GRAD_MIN * 8) {
-                put_px(buf, x, y, 0xFFFF);
-            }
-        }
-        
-        // Copia a linha atual original para ser a anterior na próxima iteração
-        memcpy(linha_ant, linha_at, CAM_LARGURA);
-    }
-}
-
-// ---------- base64 (debug pela serial) ----------
-static void b64_triplet(uint8_t a, uint8_t b, uint8_t c, int n) {
-    static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    char o[5];
-    uint32_t v = ((uint32_t)a << 16) | ((uint32_t)b << 8) | c;
-    o[0] = T[(v >> 18) & 63]; o[1] = T[(v >> 12) & 63];
-    o[2] = (n >= 2) ? T[(v >> 6) & 63] : '='; o[3] = (n >= 3) ? T[v & 63] : '='; o[4] = 0;
-    printf("%s", o);
-}
-class Base64Stream {
-public:
-    void put(uint8_t byte) {
-        trio[n++] = byte;
-        if (n == 3) {
-            b64_triplet(trio[0], trio[1], trio[2], 3);
-            col += 4;
-            n = 0;
-            if (col >= 76) {
-                printf("\n");
-                col = 0;
-                linhas++;
-                if (linhas % 20 == 0) {
-                    vTaskDelay(pdMS_TO_TICKS(10)); // cede a CPU temporariamente para a IDLE task resetar o watchdog
-                }
-            }
-        }
-    }
-    void finish() {
-        if (n == 1) b64_triplet(trio[0], 0, 0, 1);
-        else if (n == 2) b64_triplet(trio[0], trio[1], 0, 2);
-        if (n || col) printf("\n");
-        n = 0; col = 0; linhas = 0;
-        vTaskDelay(pdMS_TO_TICKS(5)); // Garante yield ao concluir
-    }
-private:
-    uint8_t trio[3] = {}; int n = 0; int col = 0; int linhas = 0;
-};
-
-static void envia_ppm_base64(const camera_fb_t* fb, const VisaoDebugInfo& d) {
-    printf("\n===DEBUG_VISAO_META achou=%d cx=%.2f cy=%.2f mesa_cm=%.2f,%.2f filt_cm=%.2f,%.2f vel=%.2f,%.2f area=%d blobs=%d runs=%d overflow=%d fundo=%d bbox=%d,%d,%d,%d roi_bbox=%d,%d,%d,%d media_y=%d dt_us=%lld===\n",
-           d.achou ? 1 : 0, d.cx_f, d.cy_f, d.mesa_x_cm, d.mesa_y_cm, d.filt_x_cm, d.filt_y_cm,
-           d.vel_x_cm, d.vel_y_cm, d.area, d.blobs, d.runs, d.overflow ? 1 : 0, d.usou_fundo ? 1 : 0,
-           d.x0, d.y0, d.x1, d.y1, d.roi_x0, d.roi_y0, d.roi_x1, d.roi_y1,
-           d.media_y, (long long)d.dt_us);
-    printf("===DEBUG_VISAO_BASE64_INICIO===\n");
-    Base64Stream b64;
-    char header[40];
-    int hl = snprintf(header, sizeof(header), "P6\n%d %d\n255\n", (int)fb->width, (int)fb->height);
-    for (int i = 0; i < hl; i++) b64.put((uint8_t)header[i]);
-    int pixels = fb->width * fb->height;
-    for (int i = 0; i < pixels; i++) {
-        int r, g, b;
-        if (fb->format == PIXFORMAT_GRAYSCALE) { r = g = b = fb->buf[i]; }
-        else rgb565_split(rgb565_at(fb->buf, i), r, g, b);
-        b64.put((uint8_t)r); b64.put((uint8_t)g); b64.put((uint8_t)b);
-    }
-    b64.finish();
-    printf("===DEBUG_VISAO_BASE64_FIM===\n");
 }
 
 // ============================================================
@@ -632,7 +453,8 @@ static void aplica_sensor_auto() {
 // ============================================================
 //  Inicializacao
 // ============================================================
-// Inicializa o hardware da camera com o formato do modo atual (s_modo_jpeg).
+// Inicializa a camera no modo de deteccao: JPEG QQVGA (clock cheio do
+// sensor), decodificado on-chip para RGB565 a cada frame.
 static esp_err_t inicia_camera_hw() {
     camera_config_t cfg = {};
     cfg.pin_pwdn = CAM_PIN_PWDN; cfg.pin_reset = CAM_PIN_RESET; cfg.pin_xclk = CAM_PIN_XCLK;
@@ -645,25 +467,9 @@ static esp_err_t inicia_camera_hw() {
     cfg.fb_count = CAM_FB_COUNT;
     cfg.fb_location = CAMERA_FB_IN_PSRAM;
     cfg.grab_mode = CAMERA_GRAB_LATEST;
-
-#if ETAPA == 1
+    cfg.frame_size   = CAM_DETECT_FRAMESIZE;
     cfg.pixel_format = PIXFORMAT_JPEG;
-    cfg.frame_size   = CAM_STREAM_FRAMESIZE;
-    cfg.jpeg_quality = CAM_JPEG_QUALITY;
-#else
-    cfg.frame_size = CAM_DETECT_FRAMESIZE;
-    if (s_modo_jpeg) {
-        cfg.pixel_format = PIXFORMAT_JPEG;       // captura comprimida (clock cheio)
-        cfg.jpeg_quality = CAM_DETECT_JPEG_Q;
-    } else {
-  #if BOLA_MODO_COR
-        cfg.pixel_format = PIXFORMAT_RGB565;
-  #else
-        cfg.pixel_format = PIXFORMAT_GRAYSCALE;
-  #endif
-        cfg.jpeg_quality = 0;
-    }
-#endif
+    cfg.jpeg_quality = CAM_DETECT_JPEG_Q;
     return esp_camera_init(&cfg);
 }
 
@@ -706,30 +512,10 @@ bool Visao::inicia() {
 #endif
     aplicaEstadoSensor();
 
-    ESP_LOGI(TAG, "Camera OV2640 iniciada (modo=%s) | homografia=%s",
-             s_modo_jpeg ? "JPEG" : (BOLA_MODO_COR ? "RGB565" : "GRAYSCALE"),
+    ESP_LOGI(TAG, "Camera OV2640 iniciada (JPEG->RGB565) | homografia=%s",
              s_H_ok ? "OK" : "FALHOU");
     return true;
 }
-
-bool Visao::alternaCaptura() {
-    s_modo_jpeg = !s_modo_jpeg;
-    esp_camera_deinit();
-    esp_err_t err = inicia_camera_hw();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "reinit da camera falhou: 0x%x — revertendo", err);
-        s_modo_jpeg = !s_modo_jpeg;
-        esp_camera_deinit();
-        inicia_camera_hw();
-    }
-    aplicaEstadoSensor();
-    s_grid_ok = false; // s_bg_valido = false;   // referencia depende do frame; recalibra
-    resetFiltro();
-    ESP_LOGI(TAG, "modo de captura -> %s", s_modo_jpeg ? "JPEG" : "GRAYSCALE/RGB565");
-    return s_modo_jpeg;
-}
-
-bool Visao::modoJpeg() const { return s_modo_jpeg; }
 
 // ============================================================
 //  Filtro alfa-beta
@@ -765,7 +551,6 @@ Medicao Visao::detecta() {
         fb = &deco;
     }
 
-    s_frame_grayscale = (fb->format == PIXFORMAT_GRAYSCALE);
     if (fb->width != CAM_LARGURA || fb->height != CAM_ALTURA) {
         ESP_LOGE(TAG, "frame inesperado: %dx%d fmt=%d", (int)fb->width, (int)fb->height, fb->format);
         if (raw) esp_camera_fb_return(raw);
@@ -941,27 +726,15 @@ Medicao Visao::detecta() {
     float raw_x = 0, raw_y = 0;
     if (achou) pixel_para_cm(cx_f, cy_f, raw_x, raw_y);
 
-    // ---------- gating + filtro alfa-beta ----------
+    // ---------- filtro alfa-beta ----------
     float out_x = raw_x, out_y = raw_y, out_vx = 0, out_vy = 0;
-    bool gated = false;
 #if FILTRO_ATIVO
     if (achou) {
         if (filtroIniciado) {
             float px, py; ab_predict(fx, fy, fvx, fvy, dt, px, py);
-#if FILTRO_GATING_ATIVO
-            float dmax = FILTRO_VEL_MAX_CM_S * dt + 2.0f;
-            if (distf(raw_x, raw_y, px, py) > dmax) {
-                gated = true; achou = false;
-            } else {
-                float rx = raw_x - px, ry = raw_y - py;
-                fx = px + FILTRO_ALFA * rx; fy = py + FILTRO_ALFA * ry;
-                fvx += FILTRO_BETA * rx / dt; fvy += FILTRO_BETA * ry / dt;
-            }
-#else
             float rx = raw_x - px, ry = raw_y - py;
             fx = px + FILTRO_ALFA * rx; fy = py + FILTRO_ALFA * ry;
             fvx += FILTRO_BETA * rx / dt; fvy += FILTRO_BETA * ry / dt;
-#endif
         } else {
             fx = raw_x; fy = raw_y; fvx = 0; fvy = 0; filtroIniciado = true;
         }
@@ -1013,7 +786,6 @@ Medicao Visao::detecta() {
     dbg.captura_us = t_cap - t0;
     dbg.dt_us = esp_timer_get_time() - t0;
     dbg.processo_us = dbg.dt_us - dbg.captura_us;
-    (void)gated;
 
     // ---------- debug visual (imagem ORIGINAL + overlays) ----------
     if (mandar_debug) {
@@ -1030,24 +802,24 @@ Medicao Visao::detecta() {
                 for (int x = 0; x < CAM_LARGURA; x++) {
                     bool cand = (lx0 <= lx1 && x >= lx0 && x <= lx1) &&
                                 pixel_candidato(fb, x, y, y * CAM_LARGURA + x);
-                    put_px(buf, x, y, cand ? 0xFFFF : 0x0000);
+                    desenha_put_px(buf, x, y, cand ? 0xFFFF : 0x0000);
                 }
             }
         } else if (sobelLigado) {
             overlay_sobel(buf, fb);
         }
 #if OVR_MESA
-        poligono(buf, s_mesa_ext, 0xFFE0);
+        desenha_poligono(buf, s_mesa_ext, 0xFFE0);
 #endif
 #if OVR_ROI
-        poligono(buf, s_mesa_roi, 0x07E0);
+        desenha_poligono(buf, s_mesa_roi, 0x07E0);
 #endif
 #if OVR_JANELA
-        retangulo(buf, sx0, sy0, sx1, sy1, 0xF81F);
+        desenha_retangulo(buf, sx0, sy0, sx1, sy1, 0xF81F);
 #endif
 #if OVR_EIXOS
         { PontoF c = centro_origem_px();
-          cruz(buf, (int)lroundf(c.x), (int)lroundf(c.y), 0xFFE0); }
+          desenha_cruz(buf, (int)lroundf(c.x), (int)lroundf(c.y), 0xFFE0); }
 #endif
         if (melhor >= 0) {
 #if OVR_CANDIDATOS
@@ -1057,15 +829,15 @@ Medicao Visao::detecta() {
                 for (int x = a; x <= b; x++) {
                     int idx = y * CAM_LARGURA + x;
                     if (pixel_candidato(fb, x, y, idx))
-                        put_px(buf, x, y, 0x07FF);
+                        desenha_put_px(buf, x, y, 0x07FF);
                 }
             }
 #endif
 #if OVR_CAIXA
-            retangulo(buf, bx0, by0, bx1, by1, 0xF800);
+            desenha_retangulo(buf, bx0, by0, bx1, by1, 0xF800);
 #endif
 #if OVR_CENTROIDE
-            cruz(buf, dbg.cx, dbg.cy, 0x001F);
+            desenha_cruz(buf, dbg.cx, dbg.cy, 0x001F);
 #endif
         }
         envia_ppm_base64(fb, dbg);
@@ -1079,8 +851,6 @@ Medicao Visao::detecta() {
 // ============================================================
 //  Metodos publicos
 // ============================================================
-void Visao::calibraCor() { capturaFundo(); }
-
 void Visao::solicitaDebug() { debugSolicitado = true; }
 
 void Visao::ajustaCentroPx(float dx, float dy) {
@@ -1145,7 +915,6 @@ void Visao::capturaFundo() {
         deco.buf = s_rgb565; deco.width = CAM_LARGURA; deco.height = CAM_ALTURA; deco.format = PIXFORMAT_RGB565;
         esp_camera_fb_return(raw); raw = NULL; fb = &deco;
     }
-    s_frame_grayscale = (fb->format == PIXFORMAT_GRAYSCALE);
     if (fb->width != CAM_LARGURA || fb->height != CAM_ALTURA) {
         if (raw) esp_camera_fb_return(raw);
         ESP_LOGW(TAG, "capturaFundo: frame invalido");
@@ -1542,7 +1311,7 @@ void Visao::imprimeSensor() {
     printf("  auto=%d  aec(exposicao)=%d  agc(ganho)=%d  clkdiv(0xD3)=%d\n",
            autoOn ? 1 : 0, curAec, curAgc, curClkDiv);
     printf("  status: aec_value=%d agc_gain=%d\n", s->status.aec_value, s->status.agc_gain);
-    printf("  modo captura: %s\n", s_modo_jpeg ? "JPEG" : (BOLA_MODO_COR ? "RGB565" : "GRAYSCALE"));
+    printf("  modo captura: JPEG -> RGB565\n");
     printf("==============\n");
 }
 

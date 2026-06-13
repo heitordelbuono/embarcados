@@ -180,6 +180,9 @@
                 "/home/guilherme/embarcados/embarcados/managed_components/espressif__esp32-camera/driver/include",
                 "/home/guilherme/embarcados/embarcados/managed_components/espressif__esp32-camera/conversions/include",
                 "/home/guilherme/embarcados/embarcados/src",
+                "/home/guilherme/embarcados/embarcados/src/visao",
+                "/home/guilherme/embarcados/embarcados/src/controle",
+                "/home/guilherme/embarcados/embarcados/src/comms",
                 "/home/guilherme/embarcados/embarcados/include",
                 ""
             ],
@@ -358,6 +361,9 @@
                     "/home/guilherme/embarcados/embarcados/managed_components/espressif__esp32-camera/driver/include",
                     "/home/guilherme/embarcados/embarcados/managed_components/espressif__esp32-camera/conversions/include",
                     "/home/guilherme/embarcados/embarcados/src",
+                    "/home/guilherme/embarcados/embarcados/src/visao",
+                    "/home/guilherme/embarcados/embarcados/src/controle",
+                    "/home/guilherme/embarcados/embarcados/src/comms",
                     "/home/guilherme/embarcados/embarcados/include",
                     ""
                 ]

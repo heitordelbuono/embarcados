@@ -43,7 +43,6 @@ class Visao {
 public:
     bool    inicia();        // configura a camera + geometria (homografia)
     Medicao detecta();       // captura + segmentacao + centroide + cm + filtro
-    void    calibraCor();    // (compat) auto-calibracao da cor — ver capturaFundo
     void    solicitaDebug(); // manda o proximo frame anotado pela serial
     void    capturaFundo();  // memoriza a mesa VAZIA como referencia (comando 'g')
     void    limpaFundo();    // volta para a referencia por grade local
@@ -63,10 +62,8 @@ public:
     void    ajustaGanho(int delta);      // muda o ganho (agc_gain), clareia sem custar FPS
     void    autoSensor(bool on);         // liga/desliga AEC/AGC/AWB automaticos
     void    ajustaClock(int delta);      // muda o divisor de clock DVP (ponto 6)
-    void    configuraSensor(int aec, int agc, int clkdiv); // set absoluto (-1 = nao mexe) p/ sweep
+    void    configuraSensor(int aec, int agc, int clkdiv); // set absoluto (-1 = nao mexe)
     void    imprimeSensor();             // mostra aec/agc/auto/divisor atuais
-    bool    alternaCaptura();            // troca GRAYSCALE <-> JPEG em runtime; retorna true se ficou JPEG
-    bool    modoJpeg() const;            // modo de captura atual
 
     const VisaoDebugInfo& debugInfo() const;
 

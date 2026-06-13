@@ -2,7 +2,9 @@
 
 Documento da etapa de **imagem + coordenadas** (o controle/PID fica em outro
 documento). Tudo roda na própria ESP32, sem PC. Código em
-[`src/visao.cpp`](../src/visao.cpp) / [`src/visao.h`](../src/visao.h); parâmetros
+[`src/visao/visao.cpp`](../src/visao/visao.cpp) /
+[`src/visao/visao.h`](../src/visao/visao.h) (render de debug em
+[`src/visao/debug_visao.cpp`](../src/visao/debug_visao.cpp)); parâmetros
 em [`include/config.h`](../include/config.h).
 
 > Esta é a reescrita do pipeline antigo. Os problemas que ela resolve estão
@@ -13,7 +15,7 @@ em [`include/config.h`](../include/config.h).
 ## Pipeline (visão geral)
 
 ```
- esp_camera_fb_get (GRAYSCALE QQVGA 160x120, sensor FIXO)
+ esp_camera_fb_get (JPEG QQVGA 160x120, sensor FIXO) ─► decode RGB565
         │
         ▼
  referência local por pixel ──► grade de iluminação 4x4  (padrão)
@@ -35,7 +37,7 @@ em [`include/config.h`](../include/config.h).
  homografia 3x3  px ──► cm   (origem no centro, +X esquerda, +Y cima)
         │
         ▼
- filtro α-β:  posição suave  +  velocidade (cm/s)  +  gating anti-teleporte
+ filtro α-β:  posição suave  +  velocidade (cm/s)
         │
         ▼
  Medicao { x, y, vx, vy, achou, dt, t_us }
@@ -46,8 +48,8 @@ em [`include/config.h`](../include/config.h).
 ## Cada etapa, em detalhe
 
 ### 1. Captura — câmera determinística
-`esp_camera` em **GRAYSCALE QQVGA 160×120** (sem decodificar JPEG, leitura
-pixel a pixel). O ponto-chave: **exposição, ganho e AWB são FIXADOS**
+`esp_camera` em **JPEG QQVGA 160×120** (clock cheio do sensor) **decodificado
+on-chip para RGB565** a cada frame. O ponto-chave: **exposição, ganho e AWB são FIXADOS**
 (`aplica_sensor_fixo`). Auto-exposição faz o brilho da cena flutuar quando a
 bola se move → qualquer limiar fica perseguindo um alvo móvel. Fixar estabiliza
 todo o resto.
@@ -74,9 +76,7 @@ pixel vem de um de dois modos:
 ### 3. Candidatos
 `candidato = (luma ≥ BOLA_Y_MIN) && (luma − referência ≥ BOLA_DELTA_REF)`.
 `BOLA_Y_MIN` é um piso absoluto; `BOLA_DELTA_REF` é o contraste mínimo sobre o
-fundo. (Para **bola colorida** ative `BOLA_MODO_COR` → captura RGB565 e usa
-`BOLA_CHROMA_MAX`. Para bola branca/cinza, deixe em 0 — em grayscale o teste de
-cor é desligado, era código morto antes.)
+fundo. A detecção é por **brilho** (bola branca sobre mesa cinza).
 
 ### 4. Componentes conexos — *o conserto mais importante*
 Antes, **todos** os pixels acima do limiar viravam **um único blob**: bola +
@@ -127,8 +127,6 @@ posição e velocidade com `dt` **real** (medido entre frames, não fixo):
 - **Suaviza** a posição (`FILTRO_ALFA`) → menos ruído.
 - Estima **velocidade** `vx, vy` em cm/s (`FILTRO_BETA`) → já pronta para o
   termo D do PID mais tarde.
-- **Gating**: se a medição salta mais que `FILTRO_VEL_MAX_CM_S · dt` da posição
-  prevista, é rejeitada (bola não teleporta) → robustez a falsos positivos.
 - Após `ROI_PERDE_FRAMES` sem bola, o filtro reinicia (próxima detecção é aceita
   como nova).
 
@@ -139,7 +137,7 @@ Depois de achar a bola, a varredura do próximo frame se limita a uma janela de
 
 ---
 
-## Comandos (ETAPA 4, pela serial)
+## Comandos (pela serial)
 
 **Detecção / coordenada:**
 
@@ -157,49 +155,25 @@ Depois de achar a bola, a varredura do próximo frame se limita a uma janela de
 
 | Tecla | Ação |
 |---|---|
-| `j` | **alterna captura GRAYSCALE ↔ JPEG em runtime** (reinicia a câmera) |
 | `+` / `-` | exposição (`aec`) ± `CAM_AEC_STEP` — **menor = mais FPS, imagem mais escura** |
 | `.` / `,` | ganho (`agc`) ± 1 — clareia **sem** custar FPS, mas adiciona ruído |
 | `a` | liga/desliga **AUTO** (exposição/ganho/AWB) |
 | `k` / `l` | divisor de clock DVP − / + (`k` = mais rápido; pode corromper o frame) |
 | `c` | **calibra a câmera** (auto → congela → salva na NVS) |
-| `i` | imprime o estado do sensor (`aec`/`agc`/auto/`clkdiv`) |
-| `S` | **sweep automático**: varre exposição e divisor de clock e imprime CSV |
+| `q` | imprime o estado do sensor (`aec`/`agc`/auto/`clkdiv`) e os ganhos do PID |
 
-### Sweep automático de FPS (`S`)
-Mede o FPS para vários valores de **exposição** (fase `AEC`) e de **divisor de
-clock DVP** (fase `CLK`), imprimindo linhas `SWEEP,fase,aec,agc,clkdiv,fps,cap_ms,proc_ms`.
-Funciona nos dois modos de captura (o build escolhe GRAYSCALE ou JPEG; o cabeçalho
-`===SWEEP_INICIO modo=...===` diz qual). Capture com:
+> **Como ler o FPS:** o status `[5s] fps_med=... cap=...ms proc=...ms` sai a cada
+> 5 s. `cap` = captura+decode (câmera); `proc` = processamento. Se `cap ≫ proc`, o
+> gargalo é a câmera (mexa em exposição/clock); se `proc` for grande, é o código.
 
-```
-python3 tools/sweep_fps.py /dev/ttyUSB0 115200 sweep_gray.csv
-```
+## Modo de captura
 
-Rode uma vez com `CAM_CAPTURA_JPEG 0` (→ `sweep_gray.csv`) e outra com `1`
-(→ `sweep_jpeg.csv`) para comparar. O script salva o CSV, aponta o melhor ponto e
-plota `fps × exposição` e `fps × clkdiv`.
-
-> **Como ler o FPS:** a linha `visao fps=... cap=...ms proc=...ms` sai 1×/s.
-> `cap` = captura (câmera); `proc` = processamento. Se `cap ≫ proc`, o gargalo é
-> a câmera (mexa em exposição/clock/JPEG); se `proc` for grande, é o seu código.
-
-## Modo de captura: direto vs JPEG
-
-`CAM_CAPTURA_JPEG` em [config.h](../include/config.h) define só o modo **inicial**;
-em runtime você alterna com a tecla **`j`** (a câmera reinicia sozinha). Os dois
-modos produzem **a mesma `Medicao`** (x, y, vx, vy) — só muda o caminho até a matriz:
-
-- **GRAYSCALE** (direto): leitura pixel a pixel, sem decode. Sem artefatos, `proc`
-  mínimo. Captura travada em ~12.5 fps (limite do sensor para formato cru).
-- **JPEG**: captura comprimida (clock cheio → câmera produz ~50 fps) e **decodifica
-  on-chip para RGB565** (a "matriz"), que segue o **mesmo** pipeline. Decode ~24 ms
-  (vira o gargalo → ~33 fps) e é lossy. *Nota: esta versão do `esp32-camera` só expõe
-  `jpg2rgb565`; não há decode "só-Y", então o decode não dá para encurtar muito sem
-  baixar resolução.*
-
-Exposição/ganho são ajustes do **sensor** e valem **igual** nos dois modos. Medições
-do seu hardware: GRAYSCALE `cap≈78ms` (12.5 fps); JPEG `cap≈0.1ms` + `proc≈24ms` (33 fps).
+A câmera captura sempre em **JPEG** (clock cheio do sensor → ~50 fps) e o firmware
+**decodifica on-chip para RGB565** a cada frame, que segue o pipeline. Decode
+~24 ms, então o efetivo fica em ~25–33 fps. *Nota: esta versão do `esp32-camera`
+só expõe `jpg2rgb565`; não há decode "só-Y", então o decode não dá para encurtar
+sem baixar resolução.* O sweep de FPS e o modo grayscale direto foram removidos do
+firmware de produção (eram ferramentas de bring-up).
 
 ### Overlays do frame de debug
 imagem original ao fundo (não mais o Sobel destruindo tudo) com: **amarelo** =
@@ -239,12 +213,11 @@ centróide.
 
 | Grupo | Defines |
 |---|---|
-| Modo | `BOLA_MODO_COR` |
-| Limiar | `BOLA_Y_MIN`, `BOLA_DELTA_REF`, `BOLA_CHROMA_MAX` |
+| Limiar | `BOLA_Y_MIN`, `BOLA_DELTA_REF` |
 | Forma/tamanho | `BOLA_MIN/MAX_PIXELS`, `BOLA_MIN/MAX_LADO` |
 | Referência | `GRADE_NX/NY`, `VISAO_MEDIA_INTERVALO`, `FUNDO_ATUALIZA`, `FUNDO_ALPHA_SHIFT` |
 | Segmentação | `VISAO_SCAN_STEP`, `VISAO_MAX_RUNS`, `CENTROIDE_PONDERADO`, `REFINO_SUBPIXEL` |
-| Filtro | `FILTRO_ATIVO`, `FILTRO_ALFA`, `FILTRO_BETA`, `FILTRO_VEL_MAX_CM_S` |
+| Filtro | `FILTRO_ATIVO`, `FILTRO_ALFA`, `FILTRO_BETA` |
 | Tracking | `ROI_FRACAO`, `ROI_PERDE_FRAMES` |
 | Câmera | `CAM_AUTO_AJUSTE`, `CAM_AEC_FIXO`, `CAM_AGC_FIXO`, `CAM_CALIBRA_MS`, `CAM_USA_NVS` |
 | Geometria | `MESA_LADO_CM`, `MESA_EXT_*`, `MESA_ROI_*`, `MESA_CALIB_*` |
@@ -261,6 +234,5 @@ centróide.
 | Centróide binário | Ponderado pela intensidade + refino sub-pixel | Menos jitter |
 | Eixos/escala médios para px→cm | Homografia 3×3 pré-computada | Mais preciso nos cantos **e** mais barato |
 | Geometria recalculada por frame | Homografia + LUT de linhas pré-computadas | Menos CPU/frame |
-| Medição crua | Filtro α-β (posição + velocidade + gating) | Suave, rejeita teleporte, dá `v` p/ o D |
+| Medição crua | Filtro α-β (posição + velocidade) | Suave, dá `v` p/ o termo D |
 | Debug destruía a imagem (Sobel por cima) | Imagem original + overlays; Sobel opcional | Calibração visual real |
-| `chroma` em grayscale (código morto) | Caminho de cor atrás de `BOLA_MODO_COR` | Código limpo |

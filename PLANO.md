@@ -36,14 +36,14 @@ LewanSoul 20 kg · fonte externa 5 V (≥ 4–5 A).
 ```
 ESP32 (FreeRTOS)
  Núcleo 1 (tempo real)                    Núcleo 0 (rede)
-  tarefaVisao ──fila(Medicao)──► tarefaControle      tarefaComms (Bluetooth)
-  captura+detecta                2x PID → fila de       botão / setpoint /
-                                 eventos → PCA9685      ganhos / telemetria
+  tarefa_principal (loop)                   wifi_controle (HTTP/AP)
+  detecta → 2x PID → fila de                interface no celular:
+  eventos → PCA9685; comandos serial        posição + clique do alvo
 ```
 
-Comunicação entre tarefas por **fila do FreeRTOS** (nunca variável global crua).
-A atuação é agendada na sua **fila de eventos** (corrige em +20 ms), preservando o
-padrão escalonador da sua `classes.c`.
+Comunicação visão→controle no mesmo loop. A atuação é agendada na **fila de
+eventos** (corrige em +20 ms), preservando o padrão escalonador da `classes.c`.
+A interface WiFi roda no core 0 (ver [docs/ARQUITETURA.md](docs/ARQUITETURA.md)).
 
 ### Estrutura de pastas
 ```
@@ -52,24 +52,19 @@ sdkconfig.defaults      # PSRAM, 240 MHz, tick 1 ms
 CMakeLists.txt
 include/
   config.h              # TODOS os parâmetros (pinos, cor, PID, servo, ROI...)
-  tipos.h               # enums (estados/eventos/ações) e structs (Medicao, DadosEvento)
+  tipos.h               # struct Medicao, DadosEvento
 src/
-  CMakeLists.txt
-  idf_component.yml     # dependência esp32-camera (usada a partir da Etapa 1)
-  main.cpp              # app_main: cria filas e tarefas (pinned to core)
-  gerenciador.{h,cpp}   # amarra visão + 2 PIDs + driver + bluetooth + fila + estados
-  visao.{h,cpp}         # OV2640 + detecção da bola            [NOVO]
-  controle_pid.{h,cpp}  # ControladorPID + FilteredDerivative  (do seu controlePID.m)
-  driver_atuacao.{h,cpp}# PCA9685 → servos
-  bluetooth.{h,cpp}     # BLE: botão/setpoint/ganhos/telemetria
-  fila_eventos.{h,cpp}  # escalonador de atuação (sua filaDeEventos)
-  maquina_estados.{h,cpp}# matriz de transição (sua maquinaEstados.c)
+  main.cpp              # app_main + loop principal (core 1)
+  comandos_serial.*     # ajuda + parser dos comandos do teclado
+  visao/                # OV2640 + detecção da bola + debug
+  controle/             # gerenciador, controle_pid, driver_atuacao, fila_eventos
+  comms/                # wifi_controle (AP + HTTP, interface no celular)
+apps/                   # testes de hardware (fora do build) — ver apps/README.md
 ```
 
 > Os arquivos antigos na raiz (`classes.c`, `main.c`, `maquinaEstados.c`,
 > `controlePID.m`, `untitled.m`) são a **referência** do projeto. O código novo fica
-> em `src/`; o PlatformIO/ESP-IDF só compila o que está em `src/CMakeLists.txt`,
-> então eles não atrapalham o build (podem ser arquivados depois).
+> em `src/`; o PlatformIO/ESP-IDF só compila o que está em `src/CMakeLists.txt`.
 
 ### Mapa: seu código → este projeto
 | Seu arquivo | Vira |
@@ -78,9 +73,12 @@ src/
 | `classes.c` → `controladorPID`/`FilteredDerivative` | `controle_pid.*` |
 | `classes.c` → `filaDeEventos` | `fila_eventos.*` |
 | `classes.c` → `driverDeAtuacao` | `driver_atuacao.*` |
-| `classes.c` → `Bluetooth` | `bluetooth.*` (sem a posição da bola — agora vem da visão) |
 | `classes.c` → `moduloGerenciador` | `gerenciador.*` |
-| `maquinaEstados.c` | `maquina_estados.*` |
+
+> A comunicação com o celular, que no plano original seria por Bluetooth/BLE,
+> acabou feita por **WiFi** (`comms/wifi_controle`): o ESP32 cria a rede "MesaPID"
+> e serve uma página com a posição da bola e o clique do alvo. A máquina de estados
+> (`maquinaEstados.c`) não chegou a ser usada e foi removida do firmware.
 
 ---
 
@@ -134,19 +132,21 @@ tarefas FreeRTOS criadas (corpos com `TODO`). Compila e roda (sem fazer nada út
 **Já implementados na visão** (detalhes em [docs/VISAO.md](docs/VISAO.md)):
 - ✅ **ROI tracking** (`ROI_FRACAO` / `ROI_PERDE_FRAMES`).
 - ✅ **Filtro α-β** → posição suave + **velocidade** estimada (pronta para virar o
-  termo D do PID) + gating anti-teleporte.
+  termo D do PID).
 - ✅ **Câmera determinística** com calibração de exposição/ganho salva na **NVS**.
 - ✅ **Subtração de fundo** da mesa vazia (alternativa à grade de iluminação).
 - ✅ **Homografia** para px→cm (corrige perspectiva).
+- ✅ **Interface no celular (WiFi):** AP "MesaPID" + página com a posição da bola
+  ao vivo (canvas) e clique para mover o alvo do PID. Parâmetros do PID ajustáveis
+  pela serial em runtime.
 
 Ainda pendentes:
 - **Predição centrando a janela** onde a bola *vai estar* (hoje a janela segue a
   última posição; falta usar a velocidade do α-β para projetar em pixels).
 - **Compensar a inclinação da mesa** na projeção (a câmera vê a bola com o prato
   inclinado; corrigir com o ângulo comandado). Refinamento de 2ª ordem.
-- **Auto-calibração de cor** (limiares de cor na NVS), se for usar bola colorida.
-- **Bluetooth (BLE):** botão liga/desliga, setpoint, ganhos e telemetria no celular.
-- **Parâmetros do PID ajustáveis em runtime** (serial/BT) — *parte de controle*.
+- **Trajetórias** (estrela/círculo/∞) desenhadas na tela do celular para a bola
+  seguir (sequência de setpoints).
 
 ---
 

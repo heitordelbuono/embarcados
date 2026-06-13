@@ -1,18 +1,19 @@
 idf_component_register(
     SRCS
         "main.cpp"
-        "gerenciador.cpp"
-        "controle_pid.cpp"
-        "driver_atuacao.cpp"
-        "bluetooth.cpp"
-        "visao.cpp"
-        "fila_eventos.cpp"
-        "maquina_estados.cpp"
-        "wifi_stream.cpp"
-        "wifi_controle.cpp"
-        "camera_teste.cpp"
+        "comandos_serial.cpp"
+        "visao/visao.cpp"
+        "visao/debug_visao.cpp"
+        "controle/gerenciador.cpp"
+        "controle/controle_pid.cpp"
+        "controle/driver_atuacao.cpp"
+        "controle/fila_eventos.cpp"
+        "comms/wifi_controle.cpp"
     INCLUDE_DIRS
         "."
+        "visao"
+        "controle"
+        "comms"
         "../include"
     REQUIRES
         esp_wifi

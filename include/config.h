@@ -4,29 +4,19 @@
 //  Mude aqui; nao espalhe numero magico pelo codigo.
 // ============================================================
 
-// ---------------- Etapa atual (muda conforme avanca) --------
-// 1 = so camera (streaming + FPS)
-// 2 = servos
-// 3 = reconhecer mesa
-// 4 = detectar bola
-// 5 = PID fechado
-#define ETAPA  4    // 4 = TUDO JUNTO: camera + coordenada + PID + servo manual/danca
+// ---------------- Access Point (interface no celular) ----------------------
+// O firmware (src/main.cpp) cria esta rede. Conecte o celular e abra
+// http://192.168.4.1 para ver a bola e clicar o alvo do PID.
+#define WIFI_AP_SSID  "MesaPID"   // nome da rede criada pelo ESP32
 
-// ---------------- Modo da Etapa 1 (camera) ------------------
-// 0 = streaming pelo WiFi  (ver ao vivo no navegador)
-// 1 = teste SEM WiFi       (mede FPS de captura + manda 1 foto pela serial)
-#define MODO_CAMERA  1
+// ---------------- Parametros usados SO pelos testes em apps/ ----------------
+// (teste_camera.cpp / wifi_stream.cpp / camera_teste.cpp)
+#define MODO_CAMERA  1           // 0 = stream WiFi | 1 = foto+FPS pela serial
 #define CAMERA_SWEEP_FPS  0      // 1 = varre resolucoes e mede FPS pela serial
 #define CAMERA_SWEEP_SEGUNDOS  4 // tempo por resolucao no sweep
-
-// ---------------- WiFi (necessario na Etapa 1 para streaming) --
-#define WIFI_SSID   "Moco24"     // <-- troque aqui
-#define WIFI_PASS   "!123456789!"    // <-- troque aqui
+#define WIFI_SSID   "Moco24"     // rede para o teste de streaming
+#define WIFI_PASS   "!123456789!"
 #define HTTP_PORT   80
-
-// ---------------- Access Point (Etapas 4/5 — controle pelo celular) --------
-// ESP32 cria esta rede. Conecte o celular e abra http://192.168.4.1
-#define WIFI_AP_SSID  "MesaPID"   // nome da rede criada pelo ESP32
 
 // ---------------- Camera (OV2640) - PINOS DA ESP-WROVER-KIT ----
 // Pinout oficial CAMERA_MODEL_WROVER_KIT da lib esp32-camera.
@@ -58,15 +48,11 @@
 #define CAM_FB_COUNT           2                // double buffer DMA
 #define CAM_XCLK_HZ            20000000         // 20 MHz; teste 24000000 p/ mais FPS
 
-// ---------------- Modo de captura (deteccao) ----------------
-// 0 = captura DIRETA (GRAYSCALE/RGB565): leitura pixel a pixel, sem decode.
-// 1 = captura em JPEG (clock cheio do sensor = mais FPS) e DECODIFICA on-chip
-//     para RGB565. Custa CPU de decode e e com perdas (artefatos), mas serve
-//     para medir o ganho de FPS do ponto 3. Mude e recompile para comparar.
-#define CAM_CAPTURA_JPEG       1    // 0 = GRAYSCALE direto | 1 = JPEG decodificado (padrao atual)
+// Captura sempre em JPEG (clock cheio do sensor = mais FPS) e DECODIFICA
+// on-chip para RGB565 a cada frame.
 #define CAM_DETECT_JPEG_Q      10               // qualidade do JPEG na deteccao
 
-// Passos dos ajustes AO VIVO pela serial (ETAPA 4)
+// Passos dos ajustes AO VIVO pela serial
 #define CAM_AEC_STEP           50               // passo da exposicao (+ / -)
 #define CAM_CLK_DIV_INICIAL    4                // divisor DVP inicial p/ teste (menor=+rapido)
 
@@ -78,20 +64,10 @@
 #define CENTRO_X           (CAM_LARGURA / 2)
 #define CENTRO_Y           (CAM_ALTURA  / 2)
 
-// ---------------- Deteccao da bola (amarelo, RGB565) --------
-// Componentes RGB565: R 0..31, G 0..63, B 0..31.
-// Limiares iniciais p/ amarelo (R alto, G alto, B baixo).
-// Serao sobrescritos pela auto-calibracao (salva na NVS).
-#define COR_R_MIN          18
-#define COR_G_MIN          35
-#define COR_B_MAX          14
+// ---------------- Deteccao da bola (branca sobre mesa cinza) --------
+// Bola detectada por BRILHO: Y (0..255) acima do fundo/grade local.
 #define BOLA_MIN_PIXELS    100      // rejeita pontinhos/reflexos; bola atual fica ~600-700 px
-
-// Deteccao inicial da bola branca sobre mesa cinza.
-// Y = brilho 0..255; chroma = max(R,G,B)-min(R,G,B).
 #define BOLA_Y_MIN         80       // brilho minimo absoluto (baixo p/ cena escura)
-#define BOLA_Y_DELTA       20       // quanto mais clara que a media da mesa
-#define BOLA_CHROMA_MAX    35       // branco/cinza tem pouca saturacao
 #define BOLA_MAX_PIXELS    1300     // rejeita manchas grandes/reflexos em QQVGA
 #define BOLA_MIN_LADO      2        // bbox minima em pixels
 #define BOLA_MAX_LADO      45       // bbox maxima em pixels
@@ -108,10 +84,13 @@
 //  VISAO_ROI_LIVRE      1 = varre o FRAME INTEIRO (ignora qualquer poligono)
 //  VISAO_ROI_EXTERNO    (so vale se LIVRE=0) 1 = ROI = contorno EXTERNO da mesa
 //                       (MESA_EXT, pega a mesa toda) | 0 = ROI interno (MESA_ROI)
+//  VISAO_ROI_RETANGULO   1 = usa o bbox retangular (magenta) do poligono como
+//                       area de busca; tolera a mesa girando sem cortar a bola
 //  VISAO_JANELA_DINAMICA 1 = janela de 35% segue a bola (rapido) | 0 = varre o
 //                       ROI inteiro todo frame
 #define VISAO_ROI_LIVRE       0
 #define VISAO_ROI_EXTERNO     1        // ROI = mesa externa toda
+#define VISAO_ROI_RETANGULO   1        // teste: varre o retangulo magenta, nao o poligono amarelo
 #define VISAO_JANELA_DINAMICA 0        // sem janela dinamica
 #define ROI_FRACAO         0.35f    // janela = 35% da largura/altura apos achar a bola
 #define ROI_PERDE_FRAMES   5        // frames sem achar -> varre tudo
@@ -128,10 +107,6 @@
 #define OVR_MASCARA_PADRAO 0        // 1 = debug 'f' sai preto/branco por padrao
 
 // ---------------- Deteccao avancada (pipeline otimizado) ----
-// Modo de cor: 0 = so brilho (grayscale, padrao); 1 = usa cor (RGB565).
-// Em grayscale o teste de chroma e desligado (era codigo morto antes).
-#define BOLA_MODO_COR        0
-
 // Referencia adaptativa: um pixel e candidato se ficar BOLA_DELTA_REF
 // acima da referencia local (grade de iluminacao OU fundo da mesa vazia)
 // E acima do piso absoluto BOLA_Y_MIN. Substitui o "media global + delta".
@@ -156,12 +131,9 @@
 #define REFINO_SUBPIXEL      1        // 1 = 2a passada step=1 dentro do bbox
 
 // Filtro alfa-beta: suaviza a posicao e estima a velocidade (cm, cm/s).
-// Tambem habilita o gating (rejeita "teleporte") e a predicao da ROI.
 #define FILTRO_ATIVO         1
-#define FILTRO_GATING_ATIVO  0      // 0 = nao rejeita blob por estar longe do frame anterior
 #define FILTRO_ALFA          0.55f    // ganho de posicao (0..1, maior = segue mais)
 #define FILTRO_BETA          0.12f    // ganho de velocidade
-#define FILTRO_VEL_MAX_CM_S  90.0f    // gating: bola nao se move mais rapido que isso
 
 // ---------------- Camera / exposicao ------------------------
 // Padrao atual: auto ligado, porque a cena real esta escura. Se quiser travar
@@ -198,9 +170,9 @@
 #define MESA_ROI_BL_Y      470
 
 // ---------------- Controle PID (valores do controlePID.m) ---
-#define PID_KP             0.0f     // comeca em 0; sobe na mao com P/p
-#define PID_KD             0.0f     // comeca em 0; sobe na mao com D/d
-#define PID_KI             0.0f     // comeca em 0; sobe na mao com I/i
+#define PID_KP             9.0f     // ajuste na mao com P/p
+#define PID_KD             10.0f    // ajuste na mao com D/d
+#define PID_KI             40.0f    // ajuste na mao com I/i
 #define PID_I_MAX          25.0f    // anti-windup: limite do termo integral (graus)
 // Escala da saida do PID: a soma (Kp*e + Ki*i + Kd*d) e MULTIPLICADA por isto
 // antes de saturar em +-SERVO_RANGE. 0.1 = ganhos efetivos 10x menores -> voce
@@ -212,7 +184,7 @@
 #define SETPOINT_X_PADRAO  0.0f
 #define SETPOINT_Y_PADRAO  0.0f
 // Atraso de atuacao agendado na fila de eventos (us)
-#define ATUACAO_ATRASO_US  20000    // 20 ms
+#define ATUACAO_ATRASO_US  0        // aplica imediatamente (sem lag artificial)
 
 // ---------------- Servos / PCA9685 --------------------------
 // O PCA9685 COMPARTILHA o barramento I2C da camera (SCCB), nos pinos SIOD/SIOC.
@@ -232,20 +204,11 @@
 #define SERVO_NEUTRO_Y     97       // angulo real quando mesa esta plana (eixo Y)
 #define SERVO_X_INVERTIDO  1        // 1 = inverte direcao do servo X
 #define SERVO_Y_INVERTIDO  0        // 1 = inverte direcao do servo Y
-#define SERVO_RANGE        30       // desvio maximo a partir do neutro (+/- graus)
+#define SERVO_RANGE        40       // desvio maximo a partir do neutro (+/- graus)
 #define SERVO_DANCE_RANGE  10       // desvio maximo da danca (+/- graus)
 #define SERVO_DANCE_SPEED_X 3.5f    // velocidade angular da gangorra no eixo X
 #define SERVO_DANCE_SPEED_Y 3.5f    // velocidade angular da gangorra no eixo Y
-#define SERVO_DANCE_HOLD_MS 500     // pausa em cada posicao aleatoria (ms)
 #define SERVO_MIN          0        // limite fisico minimo
 #define SERVO_MAX          180      // limite fisico maximo
 #define SERVO_PULSO_MIN_US 500
 #define SERVO_PULSO_MAX_US 2500
-
-// ---------------- FreeRTOS (dual-core) ----------------------
-#define NUCLEO_VISAO       1
-#define NUCLEO_CONTROLE    1
-#define NUCLEO_COMMS       0
-#define PRIO_VISAO         5
-#define PRIO_CONTROLE      6
-#define PRIO_COMMS         3
